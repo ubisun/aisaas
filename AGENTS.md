@@ -21,6 +21,6 @@ These apply regardless of which tool is reading them. Do not write code that vio
    For Next.js, check `node_modules/next/dist/docs/` before fetching anything external.
 6. **The canonical host is https://www.neulpumsec.com (with `www`).**
    Never use the apex domain in callback or webhook URLs.
-7. **`proxy.ts` must include `/__clerk/(.*)` in its `matcher`.**
+7. **`proxy.ts` must include `'/__clerk/:path*'` in its `matcher`, right after `'/(api|trpc)(.*)'`.**
    The file is `proxy.ts` at the repo root — Next 16 renamed middleware to proxy, so never
    create a `middleware.ts`.
