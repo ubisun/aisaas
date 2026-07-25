@@ -19,3 +19,8 @@ These apply regardless of which tool is reading them. Do not write code that vio
 5. **Never guess at a library API.**
    Fetch `<vendor>/llms.txt` or the docs URL + `.md` to confirm.
    For Next.js, check `node_modules/next/dist/docs/` before fetching anything external.
+6. **The canonical host is https://www.neulpumsec.com (with `www`).**
+   Never use the apex domain in callback or webhook URLs.
+7. **`proxy.ts` must include `/__clerk/(.*)` in its `matcher`.**
+   The file is `proxy.ts` at the repo root — Next 16 renamed middleware to proxy, so never
+   create a `middleware.ts`.

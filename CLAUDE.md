@@ -42,7 +42,7 @@ Environment variables are in the same position: only `NEXT_PUBLIC_APP_URL` is ac
 Per `AGENTS.md`, read `node_modules/next/dist/docs/` before writing code. Load-bearing deltas from Next 14/15 habits:
 
 - **Request APIs are async** — `params`, `searchParams`, `cookies()`, `headers()`, and `draftMode()` must be awaited. Same for `icon`/`opengraph-image` params and `sitemap`'s `id`.
-- **`middleware.ts` is now `proxy.ts`** — root level, exporting `proxy`. Same functionality, new name.
+- **`middleware.ts` is now `proxy.ts`** — Next 16 renamed it; `middleware.ts` is deprecated and must never be created. The file goes at the repo root (`proxy.ts`, alongside `app/`) because this project has no `src/` directory, and it exports `proxy`. Same functionality, new name.
 - **Turbopack is the default** for both dev and build.
 - **`next lint` was removed** — hence `"lint": "eslint"` and the flat config in `eslint.config.mjs`.
 - **Caching**: `use cache` plus `cacheComponents: true` in `next.config.ts` is the current model; `experimental.dynamicIO` and `experimental.useCache` are gone. Cache Components are not enabled here, so `node_modules/next/dist/docs/01-app/02-guides/caching-without-cache-components.md` describes current behavior.
