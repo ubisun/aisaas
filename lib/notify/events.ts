@@ -13,7 +13,14 @@ export type AppEvent =
       durationMs: number;
     }
   | { type: "market-report.skipped"; sessionDate: string; detail: string }
-  | { type: "market-report.failed"; sessionDate: string; detail: string };
+  | { type: "market-report.failed"; sessionDate: string; detail: string }
+  /**
+   * A queued step that gave up entirely -- reported from outside the dead
+   * process, so it belongs to no team in particular.
+   */
+  | { type: "job.exhausted"; step: string; key: string; detail: string }
+  /** A step failed but enough survived to be worth finishing rather than redoing. */
+  | { type: "job.retrying"; step: string; key: string; detail: string };
 
 export type RenderedEvent = {
   /** Telegram HTML: only &, < and > need escaping. */
@@ -56,6 +63,24 @@ export function render(event: AppEvent): RenderedEvent {
           `<b>❌ Market report failed</b>\n` +
           `US session <b>${escapeHtml(event.sessionDate)}</b>\n\n` +
           `<code>${escapeHtml(event.detail.slice(0, 500))}</code>`,
+      };
+
+    case "job.exhausted":
+      return {
+        html:
+          `<b>🛑 A job gave up</b>\n` +
+          `<b>${escapeHtml(event.step)}</b> for <b>${escapeHtml(event.key)}</b>\n\n` +
+          `<code>${escapeHtml(event.detail.slice(0, 500))}</code>\n\n` +
+          `Retries are exhausted; nothing will run again until the next schedule.`,
+      };
+
+    case "job.retrying":
+      return {
+        html:
+          `<b>🔁 Repairing a run</b>\n` +
+          `<b>${escapeHtml(event.step)}</b> for <b>${escapeHtml(event.key)}</b>\n\n` +
+          `${escapeHtml(event.detail)}`,
+        silent: true,
       };
   }
 }
