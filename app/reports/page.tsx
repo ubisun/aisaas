@@ -1,6 +1,6 @@
 import { auth } from "@clerk/nextjs/server";
 
-import type { SectorOutlook } from "@/lib/report/generate";
+import type { SectorOutlook } from "@/lib/teams/market-report/generate";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 
 type ReportRow = {

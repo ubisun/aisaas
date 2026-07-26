@@ -1,6 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 
-import type { CollectedQuote } from "@/lib/market/finnhub";
+import type { CollectedQuote } from "@/lib/teams/market-report/finnhub";
 
 export const REPORT_MODEL = "claude-opus-5";
 

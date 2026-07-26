@@ -2,8 +2,8 @@ import { verifySignatureAppRouter } from "@upstash/qstash/nextjs";
 
 import { notify } from "@/lib/notify";
 import { enqueue } from "@/lib/queue";
-import { runMarketCloseJob } from "@/lib/report/run";
-import { createAdminClient } from "@/lib/supabase/admin";
+import { finishRun } from "@/lib/runs";
+import { runMarketCloseJob } from "@/lib/teams/market-report/run";
 
 type JobPayload = {
   runId: string;
@@ -20,21 +20,13 @@ export const maxDuration = 60;
  */
 async function handle(request: Request) {
   const { runId, sessionDate } = (await request.json()) as JobPayload;
-  const supabase = createAdminClient();
   const startedAtMs = Date.now();
 
   try {
     const { outcome, needsTranslation } = await runMarketCloseJob(runId, sessionDate);
 
     if (!needsTranslation) {
-      await supabase
-        .from("report_runs")
-        .update({
-          status: outcome.status,
-          detail: outcome.detail ?? null,
-          finished_at: new Date().toISOString(),
-        })
-        .eq("id", runId);
+      await finishRun(runId, outcome.status, outcome.detail);
       return Response.json(outcome, { status: 200 });
     }
 
@@ -42,11 +34,8 @@ async function handle(request: Request) {
     return Response.json({ status: "translating", sessionDate }, { status: 202 });
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
-    await supabase
-      .from("report_runs")
-      .update({ status: "failed", detail, finished_at: new Date().toISOString() })
-      .eq("id", runId);
-    await notify({ type: "report.failed", sessionDate, detail });
+    await finishRun(runId, "failed", detail);
+    await notify({ type: "market-report.failed", sessionDate, detail });
 
     // 500 lets QStash retry; the run row is left in `failed` so the scheduled
     // endpoint will re-claim the session rather than treat it as done.

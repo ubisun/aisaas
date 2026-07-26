@@ -1,8 +1,8 @@
 import { verifySignatureAppRouter } from "@upstash/qstash/nextjs";
 
 import { notify } from "@/lib/notify";
-import { runTranslateJob } from "@/lib/report/run";
-import { createAdminClient } from "@/lib/supabase/admin";
+import { finishRun } from "@/lib/runs";
+import { runTranslateJob } from "@/lib/teams/market-report/run";
 
 type TranslatePayload = {
   runId: string;
@@ -21,22 +21,15 @@ export const maxDuration = 60;
  */
 async function handle(request: Request) {
   const { runId, sessionDate, startedAtMs } = (await request.json()) as TranslatePayload;
-  const supabase = createAdminClient();
 
   try {
     await runTranslateJob(runId, sessionDate, startedAtMs);
-    await supabase
-      .from("report_runs")
-      .update({ status: "succeeded", detail: null, finished_at: new Date().toISOString() })
-      .eq("id", runId);
+    await finishRun(runId, "succeeded");
     return Response.json({ status: "succeeded", sessionDate }, { status: 200 });
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
-    await supabase
-      .from("report_runs")
-      .update({ status: "failed", detail, finished_at: new Date().toISOString() })
-      .eq("id", runId);
-    await notify({ type: "report.failed", sessionDate, detail });
+    await finishRun(runId, "failed", detail);
+    await notify({ type: "market-report.failed", sessionDate, detail });
     return Response.json({ status: "failed", detail }, { status: 500 });
   }
 }

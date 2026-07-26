@@ -7,13 +7,13 @@
  */
 export type AppEvent =
   | {
-      type: "report.published";
+      type: "market-report.published";
       sessionDate: string;
       sectorCount: number;
       durationMs: number;
     }
-  | { type: "report.skipped"; sessionDate: string; detail: string }
-  | { type: "report.failed"; sessionDate: string; detail: string };
+  | { type: "market-report.skipped"; sessionDate: string; detail: string }
+  | { type: "market-report.failed"; sessionDate: string; detail: string };
 
 export type RenderedEvent = {
   /** Telegram HTML: only &, < and > need escaping. */
@@ -33,7 +33,7 @@ function reportsUrl(): string {
 
 export function render(event: AppEvent): RenderedEvent {
   switch (event.type) {
-    case "report.published":
+    case "market-report.published":
       return {
         html:
           `<b>📈 Market report ready</b>\n` +
@@ -42,7 +42,7 @@ export function render(event: AppEvent): RenderedEvent {
           `<a href="${escapeHtml(reportsUrl())}">Open the report</a>`,
       };
 
-    case "report.skipped":
+    case "market-report.skipped":
       return {
         html:
           `<b>⏸ No report for ${escapeHtml(event.sessionDate)}</b>\n` +
@@ -50,7 +50,7 @@ export function render(event: AppEvent): RenderedEvent {
         silent: true,
       };
 
-    case "report.failed":
+    case "market-report.failed":
       return {
         html:
           `<b>❌ Market report failed</b>\n` +

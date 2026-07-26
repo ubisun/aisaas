@@ -1,12 +1,13 @@
-import { collectQuotes } from "@/lib/market/finnhub";
-import { isStale } from "@/lib/market/session";
+import { collectQuotes } from "@/lib/teams/market-report/finnhub";
+import { isStale } from "@/lib/teams/market-report/session";
 import { notify } from "@/lib/notify";
+import { setPhase } from "@/lib/runs";
 import {
   generateReport,
   translateReport,
   REPORT_MODEL,
   type GeneratedReport,
-} from "@/lib/report/generate";
+} from "@/lib/teams/market-report/generate";
 import { createAdminClient } from "@/lib/supabase/admin";
 
 export type JobOutcome = {
@@ -31,7 +32,7 @@ export async function runMarketCloseJob(
 ): Promise<{ outcome: JobOutcome; needsTranslation: boolean }> {
   const supabase = createAdminClient();
 
-  await supabase.from("report_runs").update({ status: "collecting" }).eq("id", runId);
+  await setPhase(runId, "collecting");
   const quotes = await collectQuotes();
 
   // Every quote predating the expected session means the market never opened --
@@ -39,7 +40,7 @@ export async function runMarketCloseJob(
   // a new date.
   if (quotes.every((quote) => isStale(quote.timestamp, sessionDate))) {
     const detail = `No trading activity for ${sessionDate}; likely a market holiday.`;
-    await notify({ type: "report.skipped", sessionDate, detail });
+    await notify({ type: "market-report.skipped", sessionDate, detail });
     return { outcome: { status: "skipped", sessionDate, detail }, needsTranslation: false };
   }
 
@@ -57,7 +58,7 @@ export async function runMarketCloseJob(
   );
   if (quotesError) throw new Error(`Storing quotes failed: ${quotesError.message}`);
 
-  await supabase.from("report_runs").update({ status: "analyzing" }).eq("id", runId);
+  await setPhase(runId, "analyzing");
   const report = await generateReport(sessionDate, quotes);
 
   const { error: reportError } = await supabase.from("reports").upsert(
@@ -119,7 +120,7 @@ export async function runTranslateJob(
   if (updateError) throw new Error(`Storing the translation failed: ${updateError.message}`);
 
   await notify({
-    type: "report.published",
+    type: "market-report.published",
     sessionDate,
     sectorCount: merged.length,
     durationMs: Date.now() - startedAtMs,
