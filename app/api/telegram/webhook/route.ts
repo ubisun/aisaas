@@ -1,6 +1,7 @@
 import { decideApproval } from "@/lib/approvals";
 import { answerCallbackQuery, sendMessage } from "@/lib/telegram/client";
 import { runCommand } from "@/lib/telegram/commands";
+import { recordFeedback } from "@/lib/teams/strategy/session";
 
 /**
  * Inbound Telegram updates -- the CEO's way of asking the company something,
@@ -99,7 +100,21 @@ export async function POST(request: Request) {
   const reply = await runCommand(message.text);
   if (reply) {
     await sendMessage(chatId, reply, { replyTo: message.message_id });
+    return Response.json({ ok: true }, { status: 200 });
   }
+
+  // Anything that is not a command is treated as a reply to the strategy
+  // department's latest idea. Requiring a /feedback prefix would mean losing
+  // the note whenever it is written without one, and this chat has exactly one
+  // human in it.
+  const attached = await recordFeedback(message.text);
+  await sendMessage(
+    chatId,
+    attached
+      ? `기록했습니다 — <b>${attached.title}</b>에 대한 피드백으로 반영됩니다.`
+      : "아직 피드백을 붙일 아이디어가 없습니다. 첫 보고는 오후 5시입니다.",
+    { replyTo: message.message_id },
+  );
 
   return Response.json({ ok: true }, { status: 200 });
 }

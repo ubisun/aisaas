@@ -129,6 +129,100 @@ const approvals: Command = {
   },
 };
 
+/**
+ * Published list rates, per million tokens. Cache reads bill at about a tenth
+ * of input; writes at a premium, which is folded in below.
+ *
+ * Sonnet 5 carries an introductory discount to 2026-08-31, so a bill using
+ * these figures reads slightly high — the right direction for an estimate.
+ */
+const RATES: Record<string, { input: number; output: number }> = {
+  "claude-opus-5": { input: 5, output: 25 },
+  "claude-sonnet-5": { input: 3, output: 15 },
+  "claude-haiku-4-5": { input: 1, output: 5 },
+};
+
+/** Billed per search, separately from tokens. */
+const WEB_SEARCH_USD = 0.01;
+
+type UsageRow = {
+  team: string;
+  purpose: string;
+  model: string;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_write_tokens: number;
+  web_searches: number;
+};
+
+function costOf(row: UsageRow): number {
+  const rate = RATES[row.model] ?? { input: 5, output: 25 };
+  const perToken = (tokens: number, usdPerMillion: number) => (tokens / 1_000_000) * usdPerMillion;
+
+  return (
+    perToken(row.input_tokens, rate.input) +
+    perToken(row.output_tokens, rate.output) +
+    perToken(row.cache_read_tokens, rate.input * 0.1) +
+    perToken(row.cache_write_tokens, rate.input * 1.25) +
+    row.web_searches * WEB_SEARCH_USD
+  );
+}
+
+const cost: Command = {
+  name: "cost",
+  description: "What the company has spent on models",
+  async handle() {
+    const supabase = createAdminClient();
+    const since = new Date(Date.now() - 7 * 86_400_000).toISOString();
+
+    const { data, error } = await supabase
+      .from("llm_usage")
+      .select("team, purpose, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, web_searches, created_at")
+      .gte("created_at", since);
+
+    if (error) return `Could not read usage: ${escapeHtml(error.message)}`;
+    if (!data?.length) return "No model calls recorded yet.";
+
+    const dayAgo = Date.now() - 86_400_000;
+    const rows = data as (UsageRow & { created_at: string })[];
+
+    const byTeam = new Map<string, { day: number; week: number; calls: number; searches: number }>();
+    let dayTotal = 0;
+    let weekTotal = 0;
+
+    for (const row of rows) {
+      const usd = costOf(row);
+      const isToday = new Date(row.created_at).getTime() >= dayAgo;
+
+      const entry = byTeam.get(row.team) ?? { day: 0, week: 0, calls: 0, searches: 0 };
+      entry.week += usd;
+      entry.calls += 1;
+      entry.searches += row.web_searches;
+      if (isToday) entry.day += usd;
+      byTeam.set(row.team, entry);
+
+      weekTotal += usd;
+      if (isToday) dayTotal += usd;
+    }
+
+    const lines = [...byTeam.entries()]
+      .sort((a, b) => b[1].week - a[1].week)
+      .map(([team, e]) => {
+        const searches = e.searches ? `, 검색 ${e.searches}회` : "";
+        return `<b>${escapeHtml(team)}</b> — 24시간 $${e.day.toFixed(2)} · 7일 $${e.week.toFixed(2)} (호출 ${e.calls}회${searches})`;
+      });
+
+    return (
+      `<b>💸 모델 사용 비용</b>\n` +
+      `최근 24시간 <b>$${dayTotal.toFixed(2)}</b> · 7일 <b>$${weekTotal.toFixed(2)}</b>\n` +
+      `월 환산 약 $${(dayTotal * 30).toFixed(0)}\n\n` +
+      `${lines.join("\n")}\n\n` +
+      `<i>정가 기준 추정. Sonnet은 8/31까지 할인가라 실제는 이보다 낮습니다.</i>`
+    );
+  },
+};
+
 const help: Command = {
   name: "help",
   description: "This list",
@@ -138,7 +232,7 @@ const help: Command = {
   },
 };
 
-export const REGISTRY: Command[] = [status, report, approvals, help];
+export const REGISTRY: Command[] = [status, report, approvals, cost, help];
 
 /**
  * Parse and run a message. Returns null when the text is not a command, so

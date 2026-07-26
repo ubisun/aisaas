@@ -3,7 +3,10 @@ import { verifySignatureAppRouter } from "@upstash/qstash/nextjs";
 import { finishRun } from "@/lib/runs";
 import { openSession } from "@/lib/teams/trading/session";
 
-export const maxDuration = 60;
+// Screening is throttled at ~1.2s a quote.
+// Hobby allows up to 300s; the earlier 60 here was a mistaken limit,
+// not a platform one.
+export const maxDuration = 180;
 
 /** Screens the day's candidates and leaves the run armed for the ticks. */
 async function handle(request: Request) {

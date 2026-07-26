@@ -30,6 +30,19 @@ export type AppEvent =
       /** One line per submitted order, already formatted. */
       lines: string[];
     }
+  | {
+      type: "strategy.idea-filed";
+      ideaDate: string;
+      title: string;
+      titleEn: string;
+      summary: string;
+      firstTest: string;
+      revenue: string;
+      risks: string;
+      carriedForward: boolean;
+      meetings: number;
+      detailEn: string;
+    }
   | { type: "job.exhausted"; step: string; key: string; detail: string }
   /** A step failed but enough survived to be worth finishing rather than redoing. */
   | { type: "job.retrying"; step: string; key: string; detail: string };
@@ -96,6 +109,20 @@ export function render(event: AppEvent): RenderedEvent {
           `<i>모의투자 · 체결은 실제보다 낙관적입니다</i>`,
       };
     }
+
+    case "strategy.idea-filed":
+      return {
+        html:
+          `<b>💡 사업 아이디어 · ${escapeHtml(event.ideaDate)}</b>\n` +
+          `${event.carriedForward ? "어제 피드백 반영" : "신규 아이디어"} · 회의 ${event.meetings}회\n\n` +
+          `<b>${escapeHtml(event.title)}</b>\n` +
+          `<i>${escapeHtml(event.titleEn)}</i>\n\n` +
+          `${escapeHtml(event.summary)}\n\n` +
+          `<b>수익 구조</b>\n${escapeHtml(event.revenue)}\n\n` +
+          `<b>가장 큰 위험</b>\n${escapeHtml(event.risks)}\n\n` +
+          `<b>첫 검증</b>\n${escapeHtml(event.firstTest)}\n\n` +
+          `<i>이 메시지에 그냥 답장하시면 피드백으로 기록됩니다. 답장이 없으면 내일은 새 아이디어를 찾습니다.</i>`,
+      };
 
     case "job.exhausted":
       return {
