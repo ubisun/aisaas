@@ -18,11 +18,14 @@ import type { Candidate, Position, ProposedOrder, TickContext } from "./types";
  * later idea testable against a morning that actually happened.
  */
 
-export async function openSession(runId: string): Promise<number> {
+export async function openSession(runId: string, tradeDate: string): Promise<number> {
   const supabase = createAdminClient();
   await setPhase(runId, "selecting");
 
-  const [candidates, report] = await Promise.all([selectCandidates(), latestSectorOutlook()]);
+  const [candidates, report] = await Promise.all([
+    selectCandidates(),
+    latestSectorOutlook(tradeDate),
+  ]);
 
   await supabase.from("trade_candidates").delete().eq("run_id", runId);
   if (candidates.length) {
@@ -51,6 +54,10 @@ export async function openSession(runId: string): Promise<number> {
     .update({
       metadata: {
         usSessionDate: report.sessionDate,
+        reportAgeDays: report.ageDays,
+        // Recorded so a morning traded without a sector view is visible later
+        // rather than being mistaken for one where the view said nothing.
+        reportStale: report.stale,
         candidateCount: candidates.length,
         environment: TRADING_CONFIG.environment,
       },
@@ -71,7 +78,7 @@ async function buildContext(runId: string, tradeDate: string): Promise<TickConte
       .eq("run_id", runId)
       .in("status", ["submitted", "filled"]),
     fetchHoldings(),
-    latestSectorOutlook(),
+    latestSectorOutlook(tradeDate),
   ]);
 
   const candidates: Candidate[] = (candidateRows ?? []).map((row) => {
@@ -171,6 +178,7 @@ export async function runTick(runId: string, tradeDate: string): Promise<TickOut
         candidates: context.candidates,
         positions: context.positions,
         entriesUsed: context.entriesUsed,
+        sectorOutlook: context.sectorOutlook,
       },
       proposals: [...exits, ...proposal.orders],
       reasoning: proposal.reasoning,
