@@ -11,7 +11,10 @@ type TranslatePayload = {
   startedAtMs: number;
 };
 
-export const maxDuration = 60;
+// The Korean pass.
+// Hobby allows up to 300s; the earlier 60 here was a mistaken limit,
+// not a platform one.
+export const maxDuration = 180;
 
 /**
  * Translates the stored English report into Korean and marks the run done.

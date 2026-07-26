@@ -10,9 +10,10 @@ type JobPayload = {
   sessionDate: string;
 };
 
-// 60s is the Hobby ceiling. Collection plus the English report fits; the
-// Korean translation is queued separately rather than raising this.
-export const maxDuration = 60;
+// Collection plus the English report.
+// Hobby allows up to 300s; the earlier 60 here was a mistaken limit,
+// not a platform one.
+export const maxDuration = 180;
 
 /**
  * Collects the session and writes the English report, then hands the

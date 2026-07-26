@@ -1,5 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 
+import { recordUsage } from "@/lib/llm";
+
 import { TRADING_CONFIG } from "../config";
 import type { Strategy, StrategyProposal, TickContext } from "../types";
 
@@ -136,6 +138,8 @@ export const agentStrategy: Strategy = {
     });
 
     const message = await stream.finalMessage();
+    await recordUsage({ team: "trading", purpose: "tick", model: MODEL, usage: message.usage });
+
     if (message.stop_reason === "refusal") {
       return { orders: [], reasoning: "The model declined to answer; no orders placed." };
     }

@@ -1,8 +1,7 @@
-import Anthropic from "@anthropic-ai/sdk";
-
+import { complete, CHEAP_MODEL, DEFAULT_MODEL } from "@/lib/llm";
 import type { CollectedQuote } from "@/lib/teams/market-report/finnhub";
 
-export const REPORT_MODEL = "claude-opus-5";
+export const REPORT_MODEL = DEFAULT_MODEL;
 
 /**
  * Generation and translation are separate calls because a single bilingual
@@ -10,11 +9,11 @@ export const REPORT_MODEL = "claude-opus-5";
  * keeps English as the source of record: the model reasons once, in English,
  * and the Korean pass only restates that conclusion.
  *
- * `medium` effort is deliberate. Opus 5 is strong at it, and the higher
- * default spends thinking tokens this batch does not need -- which on a
- * 60s budget is the difference between finishing and being killed.
+ * Effort comes from the shared helper, which defaults to `medium` for exactly
+ * this reason -- the higher default spends thinking tokens a batch job does
+ * not need, and on a 60s budget that is the difference between finishing and
+ * being killed.
  */
-const EFFORT = "medium" as const;
 
 export type SectorOutlook = {
   sector: string;
@@ -129,53 +128,24 @@ function formatQuotes(quotes: CollectedQuote[]): string {
   return `Benchmarks:\n${indices.join("\n")}\n\nSectors:\n${sectors.join("\n")}`;
 }
 
-type OutputFormat = { type: "json_schema"; schema: Record<string, unknown> };
-
-async function complete<T>(
-  system: string,
-  user: string,
-  format: OutputFormat,
-): Promise<T> {
-  const client = new Anthropic();
-
-  const stream = client.messages.stream({
-    model: REPORT_MODEL,
-    max_tokens: 64000,
-    thinking: { type: "adaptive" },
-    system,
-    output_config: { effort: EFFORT, format },
-    messages: [{ role: "user", content: user }],
-  });
-
-  const message = await stream.finalMessage();
-
-  if (message.stop_reason === "refusal") {
-    throw new Error("The model refused the request");
-  }
-
-  const text = message.content.find((block) => block.type === "text");
-  if (!text || text.type !== "text") {
-    throw new Error("The model returned no text content");
-  }
-
-  return JSON.parse(text.text) as T;
-}
-
 export async function generateReport(
   sessionDate: string,
   quotes: CollectedQuote[],
 ): Promise<GeneratedReport> {
-  return complete<GeneratedReport>(
-    REPORT_PROMPT,
-    `US trading session of ${sessionDate}.\n\n${formatQuotes(quotes)}`,
-    REPORT_FORMAT,
-  );
+  return complete<GeneratedReport>({
+    system: REPORT_PROMPT,
+    user: `US trading session of ${sessionDate}.\n\n${formatQuotes(quotes)}`,
+    format: REPORT_FORMAT,
+    team: "market-report",
+    purpose: "generate",
+    maxTokens: 64000,
+  });
 }
 
 export async function translateReport(report: GeneratedReport): Promise<Translation> {
-  return complete<Translation>(
-    TRANSLATION_PROMPT,
-    JSON.stringify(
+  return complete<Translation>({
+    system: TRANSLATION_PROMPT,
+    user: JSON.stringify(
       {
         us_summary: report.us_summary,
         sectors: report.kr_sector_outlook.map((s) => ({
@@ -186,6 +156,10 @@ export async function translateReport(report: GeneratedReport): Promise<Translat
       null,
       2,
     ),
-    TRANSLATION_FORMAT,
-  );
+    format: TRANSLATION_FORMAT,
+    team: "market-report",
+    purpose: "translate",
+    model: CHEAP_MODEL,
+    maxTokens: 64000,
+  });
 }

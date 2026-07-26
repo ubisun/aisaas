@@ -2,7 +2,10 @@ import { verifySignatureAppRouter } from "@upstash/qstash/nextjs";
 
 import { runTick } from "@/lib/teams/trading/session";
 
-export const maxDuration = 60;
+// Quotes, a model call, and any orders.
+// Hobby allows up to 300s; the earlier 60 here was a mistaken limit,
+// not a platform one.
+export const maxDuration = 180;
 
 /**
  * One decision point inside the window.

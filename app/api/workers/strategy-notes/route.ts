@@ -1,26 +1,27 @@
 import { verifySignatureAppRouter } from "@upstash/qstash/nextjs";
 
-import { notify } from "@/lib/notify";
 import { finishRun } from "@/lib/runs";
-import { closeSession } from "@/lib/teams/trading/session";
+import { runMeeting } from "@/lib/teams/strategy/session";
 
-// Flatten, settle and brief.
+// Writing up what the search found.
 // Hobby allows up to 300s; the earlier 60 here was a mistaken limit,
 // not a platform one.
 export const maxDuration = 180;
 
-/** Flattens whatever is left and sends the day's briefing. */
+/** Turns the search output into meeting notes and closes the run. */
 async function handle(request: Request) {
-  const { runId, tradeDate } = (await request.json()) as { runId: string; tradeDate: string };
+  const { runId, searchOutput } = (await request.json()) as {
+    runId: string;
+    searchOutput: string;
+  };
 
   try {
-    await closeSession(runId, tradeDate);
+    const outcome = await runMeeting(runId, searchOutput);
     await finishRun(runId, "succeeded");
-    return Response.json({ tradeDate, status: "closed" }, { status: 200 });
+    return Response.json(outcome, { status: 200 });
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
     await finishRun(runId, "failed", detail);
-    await notify({ type: "job.exhausted", step: "trading-close", key: tradeDate, detail });
     return Response.json({ status: "failed", detail }, { status: 500 });
   }
 }
