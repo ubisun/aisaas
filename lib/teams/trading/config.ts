@@ -95,6 +95,11 @@ export const TRADING_CONFIG = {
     /** Ignore anything below this traded value, in KRW, as too thin to exit. */
     minTurnoverKrw: 5_000_000_000,
     /**
+     * Price floor, in KRW. Below this a 2% stop sits inside the tick spread,
+     * so the exit rules stop meaning what they say.
+     */
+    minPriceKrw: 2000,
+    /**
      * How far down the turnover ranking to look before screening.
      *
      * Each name costs one throttled quote call at ~1.2s, so this is bounded by

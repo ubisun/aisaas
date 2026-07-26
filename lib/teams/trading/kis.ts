@@ -237,14 +237,28 @@ export async function fetchVolumeRank(): Promise<RankedStock[]> {
     {
       method: "GET",
       query: {
+        // "J" is the KRX board, which covers both KOSPI and KOSDAQ.
         FID_COND_MRKT_DIV_CODE: "J",
         FID_COND_SCR_DIV_CODE: "20171",
-        FID_INPUT_ISCD: "0000", // whole market
-        FID_DIV_CLS_CODE: "0",
-        FID_BLNG_CLS_CODE: "3", // rank by traded value
+        // "0000" is every sector rather than one industry code.
+        FID_INPUT_ISCD: "0000",
+        // Ordinary shares only -- preferred lines move on their own dynamics.
+        FID_DIV_CLS_CODE: "1",
+        // "3" ranks by traded value, which is what "being repriced" looks like.
+        FID_BLNG_CLS_CODE: "3",
         FID_TRGT_CLS_CODE: "111111111",
-        FID_TRGT_EXLS_CLS_CODE: "0000000000",
-        FID_INPUT_PRICE_1: "",
+        /**
+         * Ten flags, in order: 투자위험/경고/주의, 관리종목, 정리매매,
+         * 불성실공시, 우선주, 거래정지, ETF, ETN, 신용주문불가, SPAC.
+         *
+         * Everything is excluded except 신용주문불가, which is irrelevant to
+         * cash orders. These are names a day trade has no business in: an
+         * administrative issue or a delisting can gap through a stop, and an
+         * ETF is not what this strategy is reading the market for.
+         */
+        FID_TRGT_EXLS_CLS_CODE: "1111111101",
+        // A floor keeps out penny stocks, where a 2% stop is inside the spread.
+        FID_INPUT_PRICE_1: String(TRADING_CONFIG.screening.minPriceKrw),
         FID_INPUT_PRICE_2: "",
         FID_VOL_CNT: "",
         FID_INPUT_DATE_1: "",
