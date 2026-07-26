@@ -12,5 +12,6 @@ export async function sendTelegram(rendered: RenderedEvent): Promise<boolean> {
   const chatId = process.env.TELEGRAM_CHAT_ID;
   if (!chatId) return false;
 
-  return sendMessage(chatId, rendered.html, { silent: rendered.silent });
+  const messageId = await sendMessage(chatId, rendered.html, { silent: rendered.silent });
+  return messageId !== null;
 }

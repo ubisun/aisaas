@@ -29,15 +29,19 @@ function api(method: string): string {
 }
 
 /**
- * Send a message. Returns false when the bot is unconfigured rather than
- * throwing, so a deployment without Telegram credentials still runs.
+ * Send a message.
+ *
+ * Returns the new message's id, or null when the bot is unconfigured -- an
+ * absent bot is not an error, so a deployment without Telegram credentials
+ * still runs. The id is what lets a message be edited later, e.g. to retire
+ * approval buttons once the decision is made elsewhere.
  */
 export async function sendMessage(
   chatId: string,
   html: string,
   options: SendOptions = {},
-): Promise<boolean> {
-  if (!botToken() || !chatId) return false;
+): Promise<number | null> {
+  if (!botToken() || !chatId) return null;
 
   const response = await fetch(api("sendMessage"), {
     method: "POST",
@@ -57,7 +61,9 @@ export async function sendMessage(
     const body = await response.text();
     throw new Error(`Telegram sendMessage returned ${response.status}: ${body.slice(0, 200)}`);
   }
-  return true;
+
+  const payload = (await response.json()) as { result?: { message_id?: number } };
+  return payload.result?.message_id ?? null;
 }
 
 /**

@@ -99,6 +99,36 @@ const report: Command = {
   },
 };
 
+const approvals: Command = {
+  name: "approvals",
+  description: "Decisions waiting on you",
+  async handle() {
+    const supabase = createAdminClient();
+    const { data, error } = await supabase
+      .from("approvals")
+      .select("team, kind, title, requested_at, expires_at")
+      .eq("status", "pending")
+      .order("requested_at", { ascending: false })
+      .limit(10);
+
+    if (error) return `Could not read approvals: ${escapeHtml(error.message)}`;
+    if (!data?.length) return "Nothing waiting on you.";
+
+    const lines = data.map((a) => {
+      const hoursLeft = Math.max(
+        0,
+        Math.round((new Date(a.expires_at).getTime() - Date.now()) / 3_600_000),
+      );
+      return `• <b>${escapeHtml(a.team)}</b> — ${escapeHtml(a.title)} (${hoursLeft}h left)`;
+    });
+
+    return (
+      `<b>Waiting on you</b>\n${lines.join("\n")}\n\n` +
+      `<a href="${escapeHtml(appUrl("/approvals"))}">Decide in the dashboard</a>`
+    );
+  },
+};
+
 const help: Command = {
   name: "help",
   description: "This list",
@@ -108,7 +138,7 @@ const help: Command = {
   },
 };
 
-export const REGISTRY: Command[] = [status, report, help];
+export const REGISTRY: Command[] = [status, report, approvals, help];
 
 /**
  * Parse and run a message. Returns null when the text is not a command, so
