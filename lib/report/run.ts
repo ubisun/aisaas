@@ -1,5 +1,6 @@
 import { collectQuotes } from "@/lib/market/finnhub";
 import { isStale } from "@/lib/market/session";
+import { notify } from "@/lib/notify";
 import { generateReport, REPORT_MODEL } from "@/lib/report/generate";
 import { createAdminClient } from "@/lib/supabase/admin";
 
@@ -23,6 +24,7 @@ export async function runMarketCloseJob(
   sessionDate: string,
 ): Promise<JobOutcome> {
   const supabase = createAdminClient();
+  const startedAt = Date.now();
 
   await supabase.from("report_runs").update({ status: "collecting" }).eq("id", runId);
   const quotes = await collectQuotes();
@@ -31,11 +33,9 @@ export async function runMarketCloseJob(
   // a holiday. Skipping keeps the previous session from being re-reported under
   // a new date.
   if (quotes.every((quote) => isStale(quote.timestamp, sessionDate))) {
-    return {
-      status: "skipped",
-      sessionDate,
-      detail: `No trading activity for ${sessionDate}; likely a market holiday.`,
-    };
+    const detail = `No trading activity for ${sessionDate}; likely a market holiday.`;
+    await notify({ type: "report.skipped", sessionDate, detail });
+    return { status: "skipped", sessionDate, detail };
   }
 
   await supabase.from("market_quotes").delete().eq("run_id", runId);
@@ -60,12 +60,20 @@ export async function runMarketCloseJob(
       run_id: runId,
       session_date: sessionDate,
       us_summary: report.us_summary,
+      us_summary_ko: report.us_summary_ko,
       kr_sector_outlook: report.kr_sector_outlook,
       model: REPORT_MODEL,
     },
     { onConflict: "run_id" },
   );
   if (reportError) throw new Error(`Storing the report failed: ${reportError.message}`);
+
+  await notify({
+    type: "report.published",
+    sessionDate,
+    sectorCount: report.kr_sector_outlook.length,
+    durationMs: Date.now() - startedAt,
+  });
 
   return { status: "succeeded", sessionDate };
 }

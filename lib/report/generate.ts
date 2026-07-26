@@ -6,13 +6,16 @@ export const REPORT_MODEL = "claude-opus-5";
 
 export type SectorOutlook = {
   sector: string;
+  sector_ko?: string;
   direction: "positive" | "neutral" | "negative";
   confidence: "low" | "medium" | "high";
   rationale: string;
+  rationale_ko?: string;
 };
 
 export type GeneratedReport = {
   us_summary: string;
+  us_summary_ko: string;
   kr_sector_outlook: SectorOutlook[];
 };
 
@@ -29,7 +32,12 @@ const REPORT_FORMAT = {
       us_summary: {
         type: "string",
         description:
-          "Narrative summary of the US session: index moves, sector leadership and laggards, and what drove them.",
+          "Narrative summary of the US session in English: index moves, sector leadership and laggards, and what drove them.",
+      },
+      us_summary_ko: {
+        type: "string",
+        description:
+          "Korean translation of us_summary. Same content and structure, written as native Korean market commentary rather than a literal rendering.",
       },
       kr_sector_outlook: {
         type: "array",
@@ -38,7 +46,12 @@ const REPORT_FORMAT = {
         items: {
           type: "object",
           properties: {
-            sector: { type: "string", description: "KRX sector name." },
+            sector: { type: "string", description: "KRX sector name in English." },
+            sector_ko: {
+              type: "string",
+              description:
+                "The sector name as it is normally written in Korean market coverage (e.g. 반도체, 2차전지), not a literal translation of the English.",
+            },
             direction: {
               type: "string",
               enum: ["positive", "neutral", "negative"],
@@ -50,10 +63,21 @@ const REPORT_FORMAT = {
             rationale: {
               type: "string",
               description:
-                "Which US move this reads from, and the transmission mechanism to the Korean sector.",
+                "Which US move this reads from, and the transmission mechanism to the Korean sector, in English.",
+            },
+            rationale_ko: {
+              type: "string",
+              description: "Korean translation of rationale.",
             },
           },
-          required: ["sector", "direction", "confidence", "rationale"],
+          required: [
+            "sector",
+            "sector_ko",
+            "direction",
+            "confidence",
+            "rationale",
+            "rationale_ko",
+          ],
           additionalProperties: false,
         },
       },
@@ -69,7 +93,9 @@ You are given the closing quotes for the US benchmarks and the eleven GICS secto
 
 For the sector outlook, reason about transmission rather than analogy: which Korean sectors are exposed to the US moves in the data, through supply chains, shared demand, or index-level correlation. Rank confidence honestly -- most single-session signals are weak, and "low" is the right answer more often than not. A sector belongs in the list only if you can state the mechanism.
 
-This is a market summary and a reasoned projection, not investment advice, and it should read as such.`;
+This is a market summary and a reasoned projection, not investment advice, and it should read as such.
+
+Write every field in English first, then supply the Korean. Reason in English -- it is the source of record. The Korean is a translation of what you concluded, not a second pass at the analysis, so the two must agree; do not add a caveat or a sector to one and not the other. Write the Korean as native market commentary in the register a Korean brokerage note would use, with the sector names Korean coverage actually uses, rather than translating the English word by word. Keep tickers, index names and numbers in their original form.`;
 
 function formatQuotes(quotes: CollectedQuote[]): string {
   const line = (q: CollectedQuote) =>

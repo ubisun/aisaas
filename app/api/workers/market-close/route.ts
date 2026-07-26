@@ -1,7 +1,13 @@
 import { verifySignatureAppRouter } from "@upstash/qstash/nextjs";
 
+import { notify } from "@/lib/notify";
 import { runMarketCloseJob } from "@/lib/report/run";
 import { createAdminClient } from "@/lib/supabase/admin";
+
+// Collection plus a bilingual report from Opus 5 runs well past the default.
+// 60s is the ceiling on Hobby; if generation outgrows it the work has to be
+// split rather than raised.
+export const maxDuration = 60;
 
 type JobPayload = {
   runId: string;
@@ -30,6 +36,7 @@ async function handle(request: Request) {
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
     await finish("failed", detail);
+    await notify({ type: "report.failed", sessionDate, detail });
 
     // 500 lets QStash retry; the run row is left in `failed` so the scheduled
     // endpoint will re-claim the session rather than treat it as done.
