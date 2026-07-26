@@ -7,6 +7,7 @@ type ReportRow = {
   id: string;
   session_date: string;
   us_summary: string;
+  us_summary_ko: string | null;
   kr_sector_outlook: SectorOutlook[];
   model: string;
 };
@@ -24,7 +25,7 @@ export default async function ReportsPage() {
   const supabase = createServerSupabaseClient();
   const { data, error } = await supabase
     .from("reports")
-    .select("id, session_date, us_summary, kr_sector_outlook, model")
+    .select("id, session_date, us_summary, us_summary_ko, kr_sector_outlook, model")
     .order("session_date", { ascending: false })
     .limit(30);
 
@@ -66,6 +67,17 @@ export default async function ReportsPage() {
               {report.us_summary}
             </p>
 
+            {report.us_summary_ko && (
+              <details className="group mt-3">
+                <summary className="cursor-pointer text-xs text-zinc-500 hover:text-zinc-800 dark:text-zinc-500 dark:hover:text-zinc-300">
+                  한국어로 보기
+                </summary>
+                <p className="mt-2 whitespace-pre-line text-sm leading-relaxed text-zinc-700 dark:text-zinc-300">
+                  {report.us_summary_ko}
+                </p>
+              </details>
+            )}
+
             <ul className="mt-6 flex flex-col gap-3">
               {report.kr_sector_outlook.map((outlook) => (
                 <li
@@ -75,6 +87,11 @@ export default async function ReportsPage() {
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="text-sm font-medium text-black dark:text-zinc-50">
                       {outlook.sector}
+                      {outlook.sector_ko && (
+                        <span className="ml-1.5 font-normal text-zinc-500 dark:text-zinc-500">
+                          {outlook.sector_ko}
+                        </span>
+                      )}
                     </span>
                     <span
                       className={`rounded-full px-2 py-0.5 text-xs font-medium ${DIRECTION_STYLES[outlook.direction]}`}
@@ -88,6 +105,11 @@ export default async function ReportsPage() {
                   <p className="mt-2 text-sm leading-relaxed text-zinc-600 dark:text-zinc-400">
                     {outlook.rationale}
                   </p>
+                  {outlook.rationale_ko && (
+                    <p className="mt-2 border-l-2 border-black/[.08] pl-3 text-sm leading-relaxed text-zinc-500 dark:border-white/[.145] dark:text-zinc-500">
+                      {outlook.rationale_ko}
+                    </p>
+                  )}
                 </li>
               ))}
             </ul>
