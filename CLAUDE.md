@@ -6,7 +6,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-DocAI — a SaaS that takes uploaded documents and produces AI analysis/summaries. The package name in `package.json` is `docai`; the repo directory is `aisaas`.
+DocAI — a daily market report SaaS. After the US market closes, it collects the closing quotes for the broad indices and the sector ETFs, summarises the session, and projects which KRX sectors are likely to be affected on the next Korean trading day. The report has to be ready before KRX opens at 09:00 KST.
+
+The package name in `package.json` is `docai` and the repo directory is `aisaas`; both predate the current scope and are kept as-is.
 
 The hard rules (Clerk integration, secret handling, queueing, webhook verification) live in `AGENTS.md`, imported above, so they are always loaded alongside this file.
 
@@ -35,7 +37,7 @@ There is no test runner yet. `npx tsc --noEmit` is the only type check (`noEmit`
 
 Environment variables are in the same position: only `NEXT_PUBLIC_APP_URL` is active. The rest sit commented out in `.env.example`, and there are no QStash variables there yet.
 
-`.gitignore` ignores `.env*` wholesale, so **`.env.example` is untracked despite its name.** Adding a variable means editing both `.env.local` and `.env.example`, and neither reaches the remote.
+`.gitignore` ignores `.env*` wholesale, but **`.env.example` was force-added and is tracked** — it is the one env file that reaches the remote, so it must never hold a real value. `.env.local` stays local. Adding a variable means editing both.
 
 ## Next.js 16 specifics
 

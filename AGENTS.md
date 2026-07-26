@@ -13,14 +13,15 @@ These apply regardless of which tool is reading them. Do not write code that vio
    Always use the `createClient(url, anonKey, { accessToken })` pattern.
 2. **Never prefix a secret with `NEXT_PUBLIC_`.**
    `SUPABASE_SERVICE_ROLE_KEY`, `CLERK_SECRET_KEY`, and `ANTHROPIC_API_KEY` are server-only.
-3. **Never do PDF parsing or AI calls synchronously inside a request handler.**
+3. **Never do market data collection or AI calls synchronously inside a request handler.**
    Hand the work to the queue and respond immediately.
+   The scheduled endpoint enqueues and returns; the worker does the work.
 4. **Every webhook handler verifies the signature and is idempotent.**
 5. **Never guess at a library API.**
    Fetch `<vendor>/llms.txt` or the docs URL + `.md` to confirm.
    For Next.js, check `node_modules/next/dist/docs/` before fetching anything external.
 6. **The canonical host is https://www.neulpumsec.com (with `www`).**
    Never use the apex domain in callback or webhook URLs.
-7. **`proxy.ts` must include `/__clerk/(.*)` in its `matcher`.**
+7. **`proxy.ts` must include `'/__clerk/:path*'` in its `matcher`, right after `'/(api|trpc)(.*)'`.**
    The file is `proxy.ts` at the repo root — Next 16 renamed middleware to proxy, so never
    create a `middleware.ts`.
