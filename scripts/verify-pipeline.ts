@@ -7,7 +7,7 @@
  *   npx tsx --env-file=.env.local scripts/verify-pipeline.ts
  */
 import { sessionDate } from "@/lib/market/session";
-import { runMarketCloseJob } from "@/lib/report/run";
+import { runMarketCloseJob, runTranslateJob } from "@/lib/report/run";
 import { createAdminClient } from "@/lib/supabase/admin";
 
 async function main() {
@@ -30,7 +30,17 @@ async function main() {
 
   const started = Date.now();
   try {
-    const outcome = await runMarketCloseJob(run.id, session);
+    const { outcome, needsTranslation } = await runMarketCloseJob(run.id, session);
+    console.log(`English report in ${((Date.now() - started) / 1000).toFixed(1)}s`);
+
+    if (needsTranslation) {
+      const translateStarted = Date.now();
+      await runTranslateJob(run.id, session, started);
+      console.log(
+        `Korean translation in ${((Date.now() - translateStarted) / 1000).toFixed(1)}s`,
+      );
+    }
+
     await supabase
       .from("report_runs")
       .update({
@@ -46,11 +56,12 @@ async function main() {
     if (outcome.status === "succeeded") {
       const { data: report } = await supabase
         .from("reports")
-        .select("us_summary, kr_sector_outlook")
+        .select("us_summary, us_summary_ko, kr_sector_outlook")
         .eq("run_id", run.id)
         .single();
 
-      console.log(`\n--- US summary ---\n${report?.us_summary}`);
+      console.log(`\n--- US summary (EN) ---\n${report?.us_summary}`);
+      console.log(`\n--- US summary (KO) ---\n${report?.us_summary_ko}`);
       console.log(`\n--- KRX sector outlook ---`);
       for (const item of report?.kr_sector_outlook ?? []) {
         console.log(`${item.sector} — ${item.direction} (confidence: ${item.confidence})`);

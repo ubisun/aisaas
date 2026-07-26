@@ -1,7 +1,12 @@
 import { collectQuotes } from "@/lib/market/finnhub";
 import { isStale } from "@/lib/market/session";
 import { notify } from "@/lib/notify";
-import { generateReport, REPORT_MODEL } from "@/lib/report/generate";
+import {
+  generateReport,
+  translateReport,
+  REPORT_MODEL,
+  type GeneratedReport,
+} from "@/lib/report/generate";
 import { createAdminClient } from "@/lib/supabase/admin";
 
 export type JobOutcome = {
@@ -11,20 +16,20 @@ export type JobOutcome = {
 };
 
 /**
- * One report run, end to end: collect quotes, store them, generate the brief,
- * store it. Kept out of the route handler so the same code path can be driven
- * directly -- from a script, or eventually a test -- without going through
- * QStash signature verification.
+ * Step one: collect the quotes and write the English report.
  *
- * Throws on failure; the caller decides how to record it and whether the
- * delivery should be retried.
+ * Stops short of the Korean translation, which runs as its own queued step --
+ * one call doing both outgrows the 60s function ceiling. The report row is
+ * stored here with `us_summary_ko` still null, so a failure in translation
+ * leaves a usable English report rather than nothing.
+ *
+ * Returns `false` when there is nothing to translate (a skipped session).
  */
 export async function runMarketCloseJob(
   runId: string,
   sessionDate: string,
-): Promise<JobOutcome> {
+): Promise<{ outcome: JobOutcome; needsTranslation: boolean }> {
   const supabase = createAdminClient();
-  const startedAt = Date.now();
 
   await supabase.from("report_runs").update({ status: "collecting" }).eq("id", runId);
   const quotes = await collectQuotes();
@@ -35,7 +40,7 @@ export async function runMarketCloseJob(
   if (quotes.every((quote) => isStale(quote.timestamp, sessionDate))) {
     const detail = `No trading activity for ${sessionDate}; likely a market holiday.`;
     await notify({ type: "report.skipped", sessionDate, detail });
-    return { status: "skipped", sessionDate, detail };
+    return { outcome: { status: "skipped", sessionDate, detail }, needsTranslation: false };
   }
 
   await supabase.from("market_quotes").delete().eq("run_id", runId);
@@ -60,7 +65,6 @@ export async function runMarketCloseJob(
       run_id: runId,
       session_date: sessionDate,
       us_summary: report.us_summary,
-      us_summary_ko: report.us_summary_ko,
       kr_sector_outlook: report.kr_sector_outlook,
       model: REPORT_MODEL,
     },
@@ -68,12 +72,56 @@ export async function runMarketCloseJob(
   );
   if (reportError) throw new Error(`Storing the report failed: ${reportError.message}`);
 
+  return { outcome: { status: "succeeded", sessionDate }, needsTranslation: true };
+}
+
+/**
+ * Step two: translate the stored report into Korean and announce it.
+ *
+ * The notification fires here rather than in step one so the message only
+ * goes out once the report is complete in both languages.
+ */
+export async function runTranslateJob(
+  runId: string,
+  sessionDate: string,
+  startedAtMs: number,
+): Promise<void> {
+  const supabase = createAdminClient();
+
+  const { data: stored, error: loadError } = await supabase
+    .from("reports")
+    .select("us_summary, kr_sector_outlook")
+    .eq("run_id", runId)
+    .single();
+
+  if (loadError || !stored) {
+    throw new Error(`No report to translate for run ${runId}: ${loadError?.message}`);
+  }
+
+  const report = stored as GeneratedReport;
+  const translation = await translateReport(report);
+
+  // Match on the English sector name rather than array position -- the model
+  // is asked to echo it back precisely so a reordered response still lands on
+  // the right row.
+  const bySector = new Map(translation.sectors.map((s) => [s.sector, s]));
+  const merged = report.kr_sector_outlook.map((outlook) => ({
+    ...outlook,
+    sector_ko: bySector.get(outlook.sector)?.sector_ko,
+    rationale_ko: bySector.get(outlook.sector)?.rationale_ko,
+  }));
+
+  const { error: updateError } = await supabase
+    .from("reports")
+    .update({ us_summary_ko: translation.us_summary_ko, kr_sector_outlook: merged })
+    .eq("run_id", runId);
+
+  if (updateError) throw new Error(`Storing the translation failed: ${updateError.message}`);
+
   await notify({
     type: "report.published",
     sessionDate,
-    sectorCount: report.kr_sector_outlook.length,
-    durationMs: Date.now() - startedAt,
+    sectorCount: merged.length,
+    durationMs: Date.now() - startedAtMs,
   });
-
-  return { status: "succeeded", sessionDate };
 }

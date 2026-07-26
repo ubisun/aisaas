@@ -1,41 +1,51 @@
 import { verifySignatureAppRouter } from "@upstash/qstash/nextjs";
 
 import { notify } from "@/lib/notify";
+import { enqueue } from "@/lib/queue";
 import { runMarketCloseJob } from "@/lib/report/run";
 import { createAdminClient } from "@/lib/supabase/admin";
-
-// Collection plus a bilingual report from Opus 5 runs well past the default.
-// 60s is the ceiling on Hobby; if generation outgrows it the work has to be
-// split rather than raised.
-export const maxDuration = 60;
 
 type JobPayload = {
   runId: string;
   sessionDate: string;
 };
 
+// 60s is the Hobby ceiling. Collection plus the English report fits; the
+// Korean translation is queued separately rather than raising this.
+export const maxDuration = 60;
+
 /**
- * Runs one session's report. Reached only through QStash, so the signature
- * check is the authentication; the work itself lives in runMarketCloseJob.
+ * Collects the session and writes the English report, then hands the
+ * translation to its own queued step.
  */
 async function handle(request: Request) {
   const { runId, sessionDate } = (await request.json()) as JobPayload;
   const supabase = createAdminClient();
-
-  const finish = async (status: string, detail?: string) => {
-    await supabase
-      .from("report_runs")
-      .update({ status, detail: detail ?? null, finished_at: new Date().toISOString() })
-      .eq("id", runId);
-  };
+  const startedAtMs = Date.now();
 
   try {
-    const outcome = await runMarketCloseJob(runId, sessionDate);
-    await finish(outcome.status, outcome.detail);
-    return Response.json(outcome, { status: 200 });
+    const { outcome, needsTranslation } = await runMarketCloseJob(runId, sessionDate);
+
+    if (!needsTranslation) {
+      await supabase
+        .from("report_runs")
+        .update({
+          status: outcome.status,
+          detail: outcome.detail ?? null,
+          finished_at: new Date().toISOString(),
+        })
+        .eq("id", runId);
+      return Response.json(outcome, { status: 200 });
+    }
+
+    await enqueue("/api/workers/translate", { runId, sessionDate, startedAtMs });
+    return Response.json({ status: "translating", sessionDate }, { status: 202 });
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
-    await finish("failed", detail);
+    await supabase
+      .from("report_runs")
+      .update({ status: "failed", detail, finished_at: new Date().toISOString() })
+      .eq("id", runId);
     await notify({ type: "report.failed", sessionDate, detail });
 
     // 500 lets QStash retry; the run row is left in `failed` so the scheduled

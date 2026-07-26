@@ -1,0 +1,46 @@
+import { verifySignatureAppRouter } from "@upstash/qstash/nextjs";
+
+import { notify } from "@/lib/notify";
+import { runTranslateJob } from "@/lib/report/run";
+import { createAdminClient } from "@/lib/supabase/admin";
+
+type TranslatePayload = {
+  runId: string;
+  sessionDate: string;
+  /** When the whole run started, so the notification reports end-to-end time. */
+  startedAtMs: number;
+};
+
+export const maxDuration = 60;
+
+/**
+ * Translates the stored English report into Korean and marks the run done.
+ *
+ * A failure here leaves the English report in place and the run `failed`, so
+ * the session is re-claimable; the report is still readable in the meantime.
+ */
+async function handle(request: Request) {
+  const { runId, sessionDate, startedAtMs } = (await request.json()) as TranslatePayload;
+  const supabase = createAdminClient();
+
+  try {
+    await runTranslateJob(runId, sessionDate, startedAtMs);
+    await supabase
+      .from("report_runs")
+      .update({ status: "succeeded", detail: null, finished_at: new Date().toISOString() })
+      .eq("id", runId);
+    return Response.json({ status: "succeeded", sessionDate }, { status: 200 });
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    await supabase
+      .from("report_runs")
+      .update({ status: "failed", detail, finished_at: new Date().toISOString() })
+      .eq("id", runId);
+    await notify({ type: "report.failed", sessionDate, detail });
+    return Response.json({ status: "failed", detail }, { status: 500 });
+  }
+}
+
+export function POST(request: Request) {
+  return verifySignatureAppRouter(handle)(request);
+}

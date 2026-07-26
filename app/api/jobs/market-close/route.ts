@@ -13,23 +13,44 @@ import { createAdminClient } from "@/lib/supabase/admin";
  * the claim is idempotent, so a QStash retry cannot produce a second report
  * for the same session (rule 4).
  */
+/**
+ * How long a non-terminal run may go without progress before a later delivery
+ * is allowed to take the session over. Comfortably longer than a full run,
+ * which is bounded by two 60s function invocations.
+ */
+const STALE_AFTER_MS = 10 * 60 * 1000;
+
 async function handle() {
   const session = sessionDate();
   const supabase = createAdminClient();
 
   const { data: existing } = await supabase
     .from("report_runs")
-    .select("id, status")
+    .select("id, status, started_at")
     .eq("session_date", session)
     .maybeSingle();
 
-  // A finished or in-flight run means this is a retry of a delivery we already
-  // accepted. Acknowledge it so QStash stops redelivering.
-  if (existing && existing.status !== "failed") {
-    return Response.json(
-      { session, status: existing.status, enqueued: false },
-      { status: 200 },
-    );
+  if (existing) {
+    const done = existing.status === "succeeded" || existing.status === "skipped";
+
+    // A run killed mid-flight -- a function timeout, say -- never gets to
+    // write `failed`, so it would sit in `analyzing` forever and permanently
+    // block its session from being retried. Anything non-terminal that has
+    // stopped making progress is treated as abandoned and re-claimed.
+    const abandoned =
+      !done &&
+      existing.status !== "failed" &&
+      Date.now() - new Date(existing.started_at).getTime() > STALE_AFTER_MS;
+
+    // A finished or genuinely in-flight run means this is a retry of a
+    // delivery we already accepted. Acknowledge it so QStash stops
+    // redelivering.
+    if (done || (!abandoned && existing.status !== "failed")) {
+      return Response.json(
+        { session, status: existing.status, enqueued: false },
+        { status: 200 },
+      );
+    }
   }
 
   const { data: run, error } = await supabase
