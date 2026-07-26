@@ -10,7 +10,7 @@ async function handle(request: Request) {
   const { runId, tradeDate } = (await request.json()) as { runId: string; tradeDate: string };
 
   try {
-    const count = await openSession(runId);
+    const count = await openSession(runId, tradeDate);
     return Response.json({ tradeDate, candidates: count }, { status: 200 });
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);

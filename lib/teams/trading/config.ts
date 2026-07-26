@@ -109,6 +109,20 @@ export const TRADING_CONFIG = {
     rankPoolSize: 15,
   },
 
+  /**
+   * How old the overnight report may be before its sector view is dropped.
+   *
+   * The gap is legitimately several days: a Korean Monday trades on Friday's
+   * US session, and a Korean holiday stretches that further. Four days covers
+   * the normal cases without letting last week's read pass as this morning's.
+   *
+   * Past it the outlook is withheld rather than the day being skipped. The
+   * market opens whether or not we have a view, and the agent's default is
+   * already to do nothing without a reason -- so less information makes it
+   * more cautious, which is the right direction to fail in.
+   */
+  maxReportAgeDays: 4,
+
   /** How often the window is evaluated, in minutes. */
   tickIntervalMinutes: 5,
 } as const;

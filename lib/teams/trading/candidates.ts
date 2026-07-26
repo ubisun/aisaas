@@ -28,16 +28,28 @@ export type SectorOutlook = {
   rationale: string;
 };
 
+export type ReportView = {
+  sessionDate: string | null;
+  /** Empty when there is no report, or when the newest one is too old to use. */
+  outlook: SectorOutlook[];
+  /** Calendar days between the report's US session and the KRX trading date. */
+  ageDays: number | null;
+  stale: boolean;
+};
+
 /**
  * The most recent report's sector view.
  *
  * Deliberately not keyed to a specific date: on a Korean Monday the newest
  * report is Friday's US session, which is exactly the one to trade on.
+ *
+ * It is keyed to *recency* though. Taking whichever report happens to be
+ * newest means a run of failed reports would have the trading side quietly
+ * acting on a week-old read of the market -- confidently, and with no signal
+ * that anything was wrong. Past the age limit the outlook is dropped and the
+ * agent is told nothing rather than something untrue.
  */
-export async function latestSectorOutlook(): Promise<{
-  sessionDate: string | null;
-  outlook: SectorOutlook[];
-}> {
+export async function latestSectorOutlook(tradeDate: string): Promise<ReportView> {
   const supabase = createAdminClient();
   const { data } = await supabase
     .from("reports")
@@ -46,9 +58,19 @@ export async function latestSectorOutlook(): Promise<{
     .limit(1)
     .maybeSingle();
 
+  if (!data) return { sessionDate: null, outlook: [], ageDays: null, stale: true };
+
+  const sessionDate = data.session_date as string;
+  const ageDays = Math.round(
+    (Date.parse(`${tradeDate}T00:00:00Z`) - Date.parse(`${sessionDate}T00:00:00Z`)) / 86_400_000,
+  );
+  const stale = ageDays > TRADING_CONFIG.maxReportAgeDays;
+
   return {
-    sessionDate: (data?.session_date as string) ?? null,
-    outlook: ((data?.kr_sector_outlook ?? []) as SectorOutlook[]) ?? [],
+    sessionDate,
+    outlook: stale ? [] : ((data.kr_sector_outlook ?? []) as SectorOutlook[]),
+    ageDays,
+    stale,
   };
 }
 
