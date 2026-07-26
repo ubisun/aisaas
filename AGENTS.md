@@ -13,8 +13,9 @@ These apply regardless of which tool is reading them. Do not write code that vio
    Always use the `createClient(url, anonKey, { accessToken })` pattern.
 2. **Never prefix a secret with `NEXT_PUBLIC_`.**
    `SUPABASE_SERVICE_ROLE_KEY`, `CLERK_SECRET_KEY`, and `ANTHROPIC_API_KEY` are server-only.
-3. **Never do PDF parsing or AI calls synchronously inside a request handler.**
+3. **Never do market data collection or AI calls synchronously inside a request handler.**
    Hand the work to the queue and respond immediately.
+   The scheduled endpoint enqueues and returns; the worker does the work.
 4. **Every webhook handler verifies the signature and is idempotent.**
 5. **Never guess at a library API.**
    Fetch `<vendor>/llms.txt` or the docs URL + `.md` to confirm.
