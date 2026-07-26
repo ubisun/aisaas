@@ -18,6 +18,18 @@ export type AppEvent =
    * A queued step that gave up entirely -- reported from outside the dead
    * process, so it belongs to no team in particular.
    */
+  | {
+      type: "trading.session-closed";
+      tradeDate: string;
+      entries: number;
+      exits: number;
+      rejected: number;
+      ticks: number;
+      unrealisedPnl: number | null;
+      holdingsValue: number | null;
+      /** One line per submitted order, already formatted. */
+      lines: string[];
+    }
   | { type: "job.exhausted"; step: string; key: string; detail: string }
   /** A step failed but enough survived to be worth finishing rather than redoing. */
   | { type: "job.retrying"; step: string; key: string; detail: string };
@@ -64,6 +76,26 @@ export function render(event: AppEvent): RenderedEvent {
           `US session <b>${escapeHtml(event.sessionDate)}</b>\n\n` +
           `<code>${escapeHtml(event.detail.slice(0, 500))}</code>`,
       };
+
+    case "trading.session-closed": {
+      const pnl =
+        event.unrealisedPnl === null
+          ? "계좌 조회 실패"
+          : `${event.unrealisedPnl >= 0 ? "+" : ""}${Math.round(event.unrealisedPnl).toLocaleString()}원`;
+
+      const body = event.lines.length
+        ? event.lines.map(escapeHtml).join("\n")
+        : "체결된 주문 없음 — 기준에 맞는 자리가 없었습니다.";
+
+      return {
+        html:
+          `<b>📊 단타 세션 종료 · ${escapeHtml(event.tradeDate)}</b>\n` +
+          `진입 ${event.entries}회 · 청산 ${event.exits}회 · 거부 ${event.rejected}건 · 판단 ${event.ticks}회\n` +
+          `평가손익 ${escapeHtml(pnl)}\n\n` +
+          `${body}\n\n` +
+          `<i>모의투자 · 체결은 실제보다 낙관적입니다</i>`,
+      };
+    }
 
     case "job.exhausted":
       return {
