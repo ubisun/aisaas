@@ -2,6 +2,7 @@ import { verifySignatureAppRouter } from "@upstash/qstash/nextjs";
 
 import { enqueue } from "@/lib/queue";
 import { claimRun } from "@/lib/runs";
+import { onDuty, standbyResponse } from "@/lib/teams/roster";
 import { seoulTradeDate } from "@/lib/teams/trading/calendar";
 
 const TEAM = "trading";
@@ -12,6 +13,8 @@ const KIND = "morning-session";
  * candidate screen to a worker; the ticks schedule themselves separately.
  */
 async function handle() {
+  if (!onDuty("trading")) return standbyResponse("trading");
+
   const tradeDate = seoulTradeDate();
 
   const claim = await claimRun(TEAM, KIND, tradeDate);
