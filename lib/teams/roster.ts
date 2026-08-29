@@ -31,10 +31,25 @@ export type Duty = {
 };
 
 export const ROSTER: Record<Department, Duty> = {
+  /**
+   * Stood down 2026-08-29, awaiting reassignment. The code stays; only the
+   * assignment is withdrawn.
+   *
+   * It is the cheap department -- generate and translate come to about $0.11 a
+   * session -- so this is not a cost decision. It is stood down because it has
+   * been failing every day since 08-06 on an exhausted Anthropic credit
+   * balance, and a department that cannot produce anything should not be woken
+   * to fail. The last report stored is for the 08-05 session.
+   *
+   * Standing it down does not endanger the trading desk. A report this old is
+   * already past `maxReportAgeDays`, so the desk has been withholding the
+   * sector view rather than trusting it since roughly 08-09 -- the arrangement
+   * that guard was written for.
+   */
   "market-report": {
-    onDuty: true,
-    since: "2026-07-26",
-    note: "Daily US close report; the trading desk reads it.",
+    onDuty: false,
+    since: "2026-08-29",
+    note: "Stood down; no model credit since 2026-08-06, last report is the 08-05 session.",
   },
 
   trading: {
