@@ -6,7 +6,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-DocAI — a daily market report SaaS. After the US market closes, it collects the closing quotes for the broad indices and the sector ETFs, summarises the session, and projects which KRX sectors are likely to be affected on the next Korean trading day. The report has to be ready before KRX opens at 09:00 KST.
+DocAI — a company run by a human CEO and a set of agent teams, reporting to the CEO over Telegram.
+
+It started as, and still contains, the daily market report: after the US market closes it collects the closing quotes for the broad indices and the sector ETFs, summarises the session, and projects which KRX sectors are likely to be affected on the next Korean trading day. That report has to be ready before KRX opens at 09:00 KST, because the trading team reads it.
 
 The package name in `package.json` is `docai` and the repo directory is `aisaas`; both predate the current scope and are kept as-is.
 
@@ -23,21 +25,54 @@ npm run lint     # eslint (flat config)
 
 There is no test runner yet. `npx tsc --noEmit` is the only type check (`noEmit` is already set in tsconfig).
 
-## Current state vs. target stack
+## Stack
 
-**Target stack** (pinned — update this file when it changes)
+Pinned — update this file when it changes.
 
 - Next.js 16.2.x / App Router / TypeScript / Tailwind CSS v4
-- Auth: Clerk
-- DB/Storage/Vector: Supabase (Postgres + pgvector)
-- Queue: Upstash QStash
+- Auth: Clerk (`@clerk/nextjs`)
+- DB: Supabase (`@supabase/supabase-js`), Postgres
+- Queue: Upstash QStash (`@upstash/qstash`)
+- Models: Anthropic (`@anthropic-ai/sdk`)
 - Deploy: Vercel
 
-**What is actually installed** is `next`, `react`, and `react-dom` — nothing else. The Clerk, Supabase, and QStash SDKs are absent, and the code is still the bootstrap: `app/layout.tsx` and `app/page.tsx`. Check `package.json` before importing a library.
-
-Environment variables are in the same position: only `NEXT_PUBLIC_APP_URL` is active. The rest sit commented out in `.env.example`, and there are no QStash variables there yet.
+The Clerk, Supabase, QStash, and Anthropic SDKs are all installed. `package.json` also pins `sharp` and `postcss` overrides to patched versions — leave them. Still check `package.json` before importing anything beyond this list: there is no test runner, no ORM, and no UI library.
 
 `.gitignore` ignores `.env*` wholesale, but **`.env.example` was force-added and is tracked** — it is the one env file that reaches the remote, so it must never hold a real value. `.env.local` stays local. Adding a variable means editing both.
+
+## Architecture
+
+Work is split into teams under `lib/teams/`, all sharing the same infrastructure.
+
+**Jobs and workers.** Per the queueing rule in `AGENTS.md`, `app/api/jobs/*` is the scheduled entry point: it enqueues to QStash and returns. `app/api/workers/*` does the work. A job that would exceed the function ceiling is split across several workers chained through the queue — the market report does generation and translation as two workers, and the strategy team has four. `app/api/jobs/failure` is QStash's failure callback, so a run killed mid-flight still reports itself.
+
+**Schedules live in QStash, not in this repo.** Nothing here creates or verifies them, so this table is a transcription — if it disagrees with the Upstash console, the console wins. Crons are UTC.
+
+| Job | Cron | KST |
+|---|---|---|
+| `market-close` | `0 22 * * 1-5` | 07:00 |
+| `trading` | `40 23 * * 0-4` | 08:40 |
+| `trading-tick` | `10-59/5 0 * * 1-5` and `0-15/5 1 * * 1-5` | 09:10–10:15, every 5 min |
+| `trading-close` | `30 1 * * 1-5` | 10:30 |
+| `strategy-meeting` | `0 0,4 * * *` | 09:00, 13:00 |
+| `strategy-report` | `0 8 * * *` | 17:00 |
+
+`TRADING_CONFIG.tickIntervalMinutes` is documentation only — nothing reads it. Changing the tick cadence means changing the two `trading-tick` crons.
+
+**Runs.** Every team writes to the shared `runs` table via `lib/runs.ts` (team, kind, key, status, phase). This is what `/status` reads, and it is how a multi-worker pipeline keeps one identity end to end.
+
+**Who is on duty** is `lib/teams/roster.ts`, not the schedules. A department that is off duty still gets woken; its job endpoint declines the work, claims no run and spends nothing. Only the endpoints that *begin* a day's work consult it — `trading-tick` and `trading-close` deliberately do not, because gating them would let a desk stood down mid-morning stop running its stop-losses while still holding stock.
+
+As of 2026-08-29 only `trading` is on duty. `strategy` and `market-report` are stood down; the reasons are recorded in the roster and are not the same reason.
+
+**Teams.**
+- `market-report` — Finnhub quotes → Anthropic summary → KRX sector outlook, English as the source of record with a Korean translation. Notifies over Telegram. **Stood down**: every run since 2026-08-06 failed on an exhausted Anthropic credit balance, so the last stored report is the 08-05 session.
+- `trading` — morning day-trading against the Korea Investment **paper** account. Every limit lives in `lib/teams/trading/config.ts` as code, never as prompt; exits are generated by the risk gate and a strategy cannot propose them. `kis.ts` refuses to run against the live host at all. The candidate screen runs inside each tick, not at open: it reads today's accumulated turnover, which is zero before the bell. Market cap is cached per trading day in `market_caps` so re-screening costs one ranking call instead of sixteen.
+- `strategy` — researches business ideas across the day's meetings and files one to the CEO at 17:00 KST. The cycle key is computed (`cycle.ts`), not taken from the calendar, because a meeting after the filing already belongs to tomorrow. **Stood down**: `strategy/search` was 84% of all model spend at $0.85 a call, because the web search results return into context at ~127k input tokens.
+
+**Talking to the CEO.** `lib/telegram/` handles both directions. Outbound is notifications; inbound is a command registry (`commands.ts`) where `/help` is generated from the registry, so a command cannot be added undocumented. `TELEGRAM_CHAT_ID` doubles as the allowlist, and the webhook checks the secret header. `lib/approvals.ts` plus `/approvals` is the gate for anything needing a human decision.
+
+**Model usage** goes through `lib/llm.ts`, which records every call to `llm_usage` (tokens, cache, web searches). `/cost` prices that table from the rate table in `commands.ts` — update the rates there when pricing changes.
 
 ## Next.js 16 specifics
 

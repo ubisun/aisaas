@@ -2,7 +2,7 @@ import { notify } from "@/lib/notify";
 import { setPhase } from "@/lib/runs";
 import { createAdminClient } from "@/lib/supabase/admin";
 
-import { latestSectorOutlook, selectCandidates } from "./candidates";
+import { latestSectorOutlook, screenNow, type ScreenedCandidate } from "./candidates";
 import { TRADING_CONFIG } from "./config";
 import { fetchAccountSummary, fetchHoldings, placeOrder } from "./kis";
 import { mandatoryExits, minutesToLastEntry, screen, seoulClock, windowState } from "./risk";
@@ -18,36 +18,27 @@ import type { Candidate, Position, ProposedOrder, TickContext } from "./types";
  * later idea testable against a morning that actually happened.
  */
 
-export async function openSession(runId: string, tradeDate: string): Promise<number> {
+/**
+ * Open the day.
+ *
+ * This runs before the opening bell, so it deliberately does no screening: at
+ * 08:40 today's accumulated turnover is zero and any shortlist built from it is
+ * empty. Picking what to buy belongs to the ticks, which run while the market
+ * is actually trading.
+ *
+ * What is left is the part that must happen before the window rather than
+ * inside it -- the run row the ticks and the close both resolve through
+ * `findTodayRun`, and the record of which overnight report the day is being
+ * traded on.
+ */
+export async function openSession(
+  runId: string,
+  tradeDate: string,
+): Promise<{ usSessionDate: string | null; reportAgeDays: number | null; reportStale: boolean }> {
   const supabase = createAdminClient();
-  await setPhase(runId, "selecting");
+  await setPhase(runId, "opening");
 
-  const [candidates, report] = await Promise.all([
-    selectCandidates(),
-    latestSectorOutlook(tradeDate),
-  ]);
-
-  await supabase.from("trade_candidates").delete().eq("run_id", runId);
-  if (candidates.length) {
-    const { error } = await supabase.from("trade_candidates").insert(
-      candidates.map((c) => ({
-        run_id: runId,
-        ticker: c.ticker,
-        name: c.name,
-        turnover_rank: c.turnoverRank,
-        selection: {
-          price: c.price,
-          changePct: c.changePct,
-          turnover: c.turnover,
-          turnoverToMarketCapPct: c.turnoverToMarketCapPct,
-          volumeTurnoverRate: c.volumeTurnoverRate,
-          marketCapEok: c.marketCapEok,
-        },
-        rationale: `Turnover rank ${c.turnoverRank}, ${c.turnoverToMarketCapPct.toFixed(2)}% of market cap traded`,
-      })),
-    );
-    if (error) throw new Error(`Storing candidates failed: ${error.message}`);
-  }
+  const report = await latestSectorOutlook(tradeDate);
 
   await supabase
     .from("runs")
@@ -58,20 +49,62 @@ export async function openSession(runId: string, tradeDate: string): Promise<num
         // Recorded so a morning traded without a sector view is visible later
         // rather than being mistaken for one where the view said nothing.
         reportStale: report.stale,
-        candidateCount: candidates.length,
         environment: TRADING_CONFIG.environment,
       },
     })
     .eq("id", runId);
 
-  return candidates.length;
+  return {
+    usSessionDate: report.sessionDate,
+    reportAgeDays: report.ageDays,
+    reportStale: report.stale,
+  };
 }
 
-async function buildContext(runId: string, tradeDate: string): Promise<TickContext> {
+/**
+ * Keep a record of what was on the shortlist today.
+ *
+ * Upserted rather than replaced, so the table accumulates every name considered
+ * during the morning instead of only the last tick's view. The per-tick view is
+ * already preserved in `strategy_ticks.snapshot`.
+ */
+async function recordCandidates(
+  runId: string,
+  candidates: ScreenedCandidate[],
+): Promise<void> {
+  if (!candidates.length) return;
+
+  const supabase = createAdminClient();
+  const { error } = await supabase.from("trade_candidates").upsert(
+    candidates.map((c) => ({
+      run_id: runId,
+      ticker: c.ticker,
+      name: c.name,
+      turnover_rank: c.turnoverRank,
+      selection: {
+        price: c.price,
+        changePct: c.changePct,
+        turnover: c.turnover,
+        turnoverToMarketCapPct: c.turnoverToMarketCapPct,
+        marketCapEok: c.marketCapEok,
+      },
+      rationale: `Turnover rank ${c.turnoverRank}, ${c.turnoverToMarketCapPct.toFixed(2)}% of market cap traded`,
+    })),
+    { onConflict: "run_id,ticker" },
+  );
+
+  // A lost record is not worth failing a tick that can still trade.
+  if (error) console.warn(`recording candidates failed: ${error.message}`);
+}
+
+async function buildContext(
+  runId: string,
+  tradeDate: string,
+  screened: ScreenedCandidate[],
+): Promise<TickContext> {
   const supabase = createAdminClient();
 
-  const [{ data: candidateRows }, { data: orderRows }, holdings, report] = await Promise.all([
-    supabase.from("trade_candidates").select("ticker, name, selection").eq("run_id", runId),
+  const [{ data: orderRows }, holdings, report] = await Promise.all([
     supabase
       .from("orders")
       .select("ticker, side, quantity, status")
@@ -81,17 +114,16 @@ async function buildContext(runId: string, tradeDate: string): Promise<TickConte
     latestSectorOutlook(tradeDate),
   ]);
 
-  const candidates: Candidate[] = (candidateRows ?? []).map((row) => {
-    const selection = (row.selection ?? {}) as Record<string, number>;
-    return {
-      ticker: row.ticker as string,
-      name: row.name as string,
-      price: selection.price ?? 0,
-      changePct: selection.changePct ?? 0,
-      turnover: selection.turnover ?? 0,
-      turnoverToMarketCapPct: selection.turnoverToMarketCapPct ?? 0,
-    };
-  });
+  // The shortlist is whatever this tick's screen just found, not a list read
+  // back from a screen run hours ago before the market opened.
+  const candidates: Candidate[] = screened.map((c) => ({
+    ticker: c.ticker,
+    name: c.name,
+    price: c.price,
+    changePct: c.changePct,
+    turnover: c.turnover,
+    turnoverToMarketCapPct: c.turnoverToMarketCapPct,
+  }));
 
   const orders = orderRows ?? [];
   const boughtByTicker = new Map<string, number>();
@@ -159,7 +191,13 @@ export async function runTick(runId: string, tradeDate: string): Promise<TickOut
   const state = windowState();
   await setPhase(runId, state === "closed" ? "closing" : "trading");
 
-  const context = await buildContext(runId, tradeDate);
+  // Only screened while entries are open. Past that the shortlist cannot be
+  // acted on, and a ranking call that nothing will read is a call not worth
+  // making -- the paper environment charges 1.2s of the tick's budget for it.
+  const screened = state === "entries-open" ? await screenNow(tradeDate) : [];
+  await recordCandidates(runId, screened);
+
+  const context = await buildContext(runId, tradeDate, screened);
   const exits = mandatoryExits(context);
 
   const proposal =

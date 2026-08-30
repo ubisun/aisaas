@@ -102,9 +102,13 @@ export const TRADING_CONFIG = {
     /**
      * How far down the turnover ranking to look before screening.
      *
-     * Each name costs one throttled quote call at ~1.2s, so this is bounded by
-     * the function's 60s budget as much as by usefulness: 15 names is roughly
-     * 18 seconds of screening.
+     * This used to be bounded by time: every name cost a throttled quote call
+     * at ~1.2s to learn its market cap, so 15 names was already 18 seconds. Now
+     * that caps are cached per trading day, only the first screen of the
+     * morning pays that and the rest cost a single ranking call, so the bound
+     * is usefulness rather than the clock. Widening it is a real option once
+     * there is enough recorded history to say whether the names below 15 were
+     * worth seeing.
      */
     rankPoolSize: 15,
   },

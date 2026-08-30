@@ -3,6 +3,7 @@ import { verifySignatureAppRouter } from "@upstash/qstash/nextjs";
 import { enqueue } from "@/lib/queue";
 import { claimRun } from "@/lib/runs";
 import { sessionDate } from "@/lib/teams/market-report/session";
+import { onDuty, standbyResponse } from "@/lib/teams/roster";
 
 const TEAM = "market-report";
 const KIND = "daily-close";
@@ -16,6 +17,8 @@ const KIND = "daily-close";
  * died mid-flight both live in lib/runs, shared with every other team.
  */
 async function handle() {
+  if (!onDuty("market-report")) return standbyResponse("market-report");
+
   const session = sessionDate();
 
   const claim = await claimRun(TEAM, KIND, session);
