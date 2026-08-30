@@ -24,12 +24,18 @@ const HOSTS = {
  * posts still quoting the retired VTTC0802U.
  */
 const TR = {
-  demo: { sell: "VTTC0011U", buy: "VTTC0012U", balance: "VTTC8434R" },
-  real: { sell: "TTTC0011U", buy: "TTTC0012U", balance: "TTTC8434R" },
+  demo: { sell: "VTTC0011U", buy: "VTTC0012U", balance: "VTTC8434R", cancel: "VTTC0013U" },
+  real: { sell: "TTTC0011U", buy: "TTTC0012U", balance: "TTTC8434R", cancel: "TTTC0013U" },
 } as const;
 
 const PRICE_TR = "FHKST01010100";
 const VOLUME_RANK_TR = "FHPST01710000";
+/** Intraday minute bars for today. */
+const MINUTE_TR = "FHKST03010200";
+/** Minute bars for a named past date. */
+const DAILY_MINUTE_TR = "FHKST03010230";
+/** Daily/weekly/monthly bars. */
+const PERIOD_TR = "FHKST03010100";
 
 function env(): "demo" | "real" {
   return TRADING_CONFIG.environment;
@@ -229,8 +235,12 @@ export type RankedStock = {
 /**
  * Stocks ranked by traded value so far today. This is the raw pool candidates
  * are drawn from -- what is actually moving, before any view about sectors.
+ *
+ * `market` selects the ranking list: 0001 KOSPI, 1001 KOSDAQ, 0000 all. The
+ * endpoint returns 30 rows and offers no paging, and "all" is dominated by
+ * KOSPI large caps, so the caller asks per market and merges.
  */
-export async function fetchVolumeRank(): Promise<RankedStock[]> {
+export async function fetchVolumeRank(market = "0000"): Promise<RankedStock[]> {
   const payload = await call<{ output?: Record<string, string>[] }>(
     "/uapi/domestic-stock/v1/quotations/volume-rank",
     VOLUME_RANK_TR,
@@ -240,8 +250,7 @@ export async function fetchVolumeRank(): Promise<RankedStock[]> {
         // "J" is the KRX board, which covers both KOSPI and KOSDAQ.
         FID_COND_MRKT_DIV_CODE: "J",
         FID_COND_SCR_DIV_CODE: "20171",
-        // "0000" is every sector rather than one industry code.
-        FID_INPUT_ISCD: "0000",
+        FID_INPUT_ISCD: market,
         // Ordinary shares only -- preferred lines move on their own dynamics.
         FID_DIV_CLS_CODE: "1",
         // "3" ranks by traded value, which is what "being repriced" looks like.
@@ -402,4 +411,201 @@ export async function placeOrder(params: {
   );
 
   return { orderNo: payload.output?.ODNO ?? "", raw: payload };
+}
+
+/**
+ * Cancel whatever is still unfilled on an order.
+ *
+ * Used when a position reaches a profit rung while its buy is still working:
+ * taking profit on shares that filled while leaving an order out to buy more
+ * of the same name would be trading against the decision just made.
+ *
+ * `QTY_ALL_ORD_YN: "Y"` cancels the remaining quantity, so the filled part is
+ * untouched. A cancel that races a fill is rejected by Korea Investment rather
+ * than half-applied, which is why the caller treats a failure here as
+ * information rather than as a reason to fail the tick.
+ */
+export async function cancelOrder(params: {
+  orderNo: string;
+  ticker: string;
+  quantity: number;
+}): Promise<{ ok: boolean; detail: string }> {
+  const { account, product } = credentials();
+
+  try {
+    const payload = await call<{ output?: { ODNO?: string }; msg1?: string }>(
+      "/uapi/domestic-stock/v1/trading/order-rvsecncl",
+      TR[env()].cancel,
+      {
+        method: "POST",
+        body: {
+          CANO: account,
+          ACNT_PRDT_CD: product,
+          KRX_FWDG_ORD_ORGNO: "",
+          ORGN_ODNO: params.orderNo,
+          ORD_DVSN: "00",
+          RVSE_CNCL_DVSN_CD: "02", // 02 is cancel; 01 would be an amendment.
+          ORD_QTY: String(params.quantity),
+          ORD_UNPR: "0",
+          QTY_ALL_ORD_YN: "Y",
+          EXCG_ID_DVSN_CD: "KRX",
+        },
+      },
+    );
+    return { ok: true, detail: payload.msg1 ?? "cancelled" };
+  } catch (cause) {
+    return { ok: false, detail: cause instanceof Error ? cause.message : String(cause) };
+  }
+}
+
+export type Candle = {
+  /** Bar start, "HHmm" in Asia/Seoul. Empty for daily bars. */
+  time: string;
+  /** Trading date, "YYYYMMDD". */
+  date: string;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+};
+
+function toCandle(row: Record<string, string>): Candle {
+  return {
+    time: row.stck_cntg_hour ?? "",
+    date: row.stck_bsop_date ?? "",
+    open: num(row.stck_oprc),
+    high: num(row.stck_hgpr),
+    low: num(row.stck_lwpr),
+    close: num(row.stck_prpr ?? row.stck_clpr),
+    volume: num(row.cntg_vol ?? row.acml_vol),
+  };
+}
+
+/**
+ * Today's minute bars, oldest first.
+ *
+ * `endTime` is the *latest* bar wanted, "HHmmss"; the endpoint answers with the
+ * thirty bars up to it and offers no way to ask for more, so a longer history
+ * has to be stitched from several calls or from the previous session.
+ *
+ * `interval` is the bar size in minutes. KIS accepts 1, 3, 5, 10, 15, 30 and 60.
+ */
+export async function fetchMinuteCandles(
+  ticker: string,
+  interval: number,
+  endTime: string,
+): Promise<Candle[]> {
+  const payload = await call<{ output2?: Record<string, string>[] }>(
+    "/uapi/domestic-stock/v1/quotations/inquire-time-itemchartprice",
+    MINUTE_TR,
+    {
+      method: "GET",
+      query: {
+        FID_ETC_CLS_CODE: "",
+        FID_COND_MRKT_DIV_CODE: "J",
+        FID_INPUT_ISCD: ticker,
+        FID_INPUT_HOUR_1: endTime,
+        FID_PW_DATA_INCU_YN: "Y",
+      },
+    },
+  );
+
+  // The response is newest first and carries the requested interval only when
+  // asked for it by hour; the caller aggregates when it needs a coarser bar.
+  const rows = (payload.output2 ?? []).map(toCandle).reverse();
+  return interval === 1 ? rows : aggregate(rows, interval);
+}
+
+/**
+ * Minute bars for a past session, oldest first.
+ *
+ * Used to carry yesterday's tail into this morning. The indicators want 14 to
+ * 20 bars and the session has seven by 09:35, so without this the momentum test
+ * simply cannot be evaluated when it matters most.
+ */
+export async function fetchPastMinuteCandles(
+  ticker: string,
+  interval: number,
+  date: string,
+  endTime = "153000",
+): Promise<Candle[]> {
+  const payload = await call<{ output2?: Record<string, string>[] }>(
+    "/uapi/domestic-stock/v1/quotations/inquire-time-dailychartprice",
+    DAILY_MINUTE_TR,
+    {
+      method: "GET",
+      query: {
+        FID_COND_MRKT_DIV_CODE: "J",
+        FID_INPUT_ISCD: ticker,
+        FID_INPUT_DATE_1: date,
+        FID_INPUT_HOUR_1: endTime,
+        FID_PW_DATA_INCU_YN: "Y",
+        FID_FAKE_TICK_INCU_YN: "N",
+      },
+    },
+  );
+
+  const rows = (payload.output2 ?? []).map(toCandle).reverse();
+  return interval === 1 ? rows : aggregate(rows, interval);
+}
+
+/** Daily bars, oldest first. Used for the higher-timeframe trend filter. */
+export async function fetchDailyCandles(
+  ticker: string,
+  from: string,
+  to: string,
+): Promise<Candle[]> {
+  const payload = await call<{ output2?: Record<string, string>[] }>(
+    "/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice",
+    PERIOD_TR,
+    {
+      method: "GET",
+      query: {
+        FID_COND_MRKT_DIV_CODE: "J",
+        FID_INPUT_ISCD: ticker,
+        FID_INPUT_DATE_1: from,
+        FID_INPUT_DATE_2: to,
+        FID_PERIOD_DIV_CODE: "D",
+        FID_ORG_ADJ_PRC: "0",
+      },
+    },
+  );
+
+  return (payload.output2 ?? [])
+    .filter((row) => row.stck_bsop_date)
+    .map(toCandle)
+    .reverse();
+}
+
+/**
+ * Fold one-minute bars into a coarser bar size.
+ *
+ * Bucketed by wall-clock minute since the session open rather than by position
+ * in the array, so a missing minute -- a name that did not trade -- shifts
+ * nothing. A bucket is the first open, the extreme high and low, the last
+ * close, and the summed volume, which is what a candle is.
+ */
+export function aggregate(candles: Candle[], interval: number): Candle[] {
+  const buckets = new Map<string, Candle>();
+
+  for (const candle of candles) {
+    const hhmm = candle.time.slice(0, 4);
+    if (hhmm.length < 4) continue;
+    const minutes = Number(hhmm.slice(0, 2)) * 60 + Number(hhmm.slice(2, 4));
+    const start = Math.floor(minutes / interval) * interval;
+    const key = `${candle.date}-${String(Math.floor(start / 60)).padStart(2, "0")}${String(start % 60).padStart(2, "0")}`;
+
+    const existing = buckets.get(key);
+    if (!existing) {
+      buckets.set(key, { ...candle, time: key.slice(-4) });
+      continue;
+    }
+    existing.high = Math.max(existing.high, candle.high);
+    existing.low = Math.min(existing.low, candle.low);
+    existing.close = candle.close;
+    existing.volume += candle.volume;
+  }
+
+  return [...buckets.values()];
 }

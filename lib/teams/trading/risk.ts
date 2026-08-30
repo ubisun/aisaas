@@ -1,5 +1,5 @@
 import { TRADING_CONFIG } from "./config";
-import type { ProposedOrder, TickContext } from "./types";
+import type { Position, ProposedOrder, TickContext, Verdict } from "./types";
 
 /**
  * The gate between a strategy's opinion and a real order.
@@ -8,10 +8,6 @@ import type { ProposedOrder, TickContext } from "./types";
  * clamped or corrected -- it is rejected with a reason and recorded, because a
  * strategy that keeps asking for things it cannot have is itself the finding.
  */
-
-export type Verdict =
-  | { allowed: true; order: ProposedOrder }
-  | { allowed: false; order: ProposedOrder; reason: string };
 
 const seoulTime = new Intl.DateTimeFormat("en-GB", {
   timeZone: "Asia/Seoul",
@@ -49,32 +45,55 @@ export function minutesToLastEntry(at: Date = new Date()): number {
   return Math.max(0, LAST_ENTRY - seoulMinutes(at));
 }
 
-export type GateInput = {
+export type EntryGateInput = {
+  /** Scoped to the proposing strategy: its candidates, positions and budget. */
   context: TickContext;
   proposals: ProposedOrder[];
-  /** Session-level loss so far, positive percent. */
-  lossPct: number;
+  /** The strategy's own loss, as a positive percent of its allocated budget. */
+  strategyLossPct: number;
+  /** Account-wide loss, as a positive percent of the day's capital. */
+  accountLossPct: number;
+  /** Tickers another strategy has already bought today. */
+  claimedByOthers: Set<string>;
+  /** Strategy-proposed orders submitted account-wide so far today. */
+  ordersSoFar: number;
   at?: Date;
 };
 
 /**
- * Screen a batch of proposals. Order matters: earlier allowances count against
- * the budgets seen by later ones, so a strategy cannot slip past the entry cap
- * by proposing several at once.
+ * Screen a strategy's entries.
+ *
+ * Order matters: earlier allowances count against the budgets seen by later
+ * ones, so a strategy cannot slip past its entry cap by proposing several at
+ * once.
  */
-export function screen({ context, proposals, lossPct, at = new Date() }: GateInput): Verdict[] {
+export function screenEntries({
+  context,
+  proposals,
+  strategyLossPct,
+  accountLossPct,
+  claimedByOthers,
+  ordersSoFar,
+  at = new Date(),
+}: EntryGateInput): Verdict[] {
   const state = windowState(at);
   const verdicts: Verdict[] = [];
 
-  const held = new Set(context.positions.map((p) => p.ticker));
   let entries = context.entriesUsed;
-  let submitted = context.ordersSoFar;
+  let submitted = ordersSoFar;
   const tradeable = new Set(context.candidates.map((c) => c.ticker));
+  // Grows as this batch is allowed, so one tick cannot buy the same name twice.
+  const takenThisTick = new Set<string>();
+  const ownedToday = new Set(context.positions.map((p) => p.ticker));
 
   const deny = (order: ProposedOrder, reason: string) =>
     verdicts.push({ allowed: false, order, reason });
 
   for (const order of proposals) {
+    if (order.side !== "buy") {
+      deny(order, "Strategies may not propose sells; exits are the risk gate's business");
+      continue;
+    }
     if (state === "before") {
       deny(
         order,
@@ -82,16 +101,22 @@ export function screen({ context, proposals, lossPct, at = new Date() }: GateInp
       );
       continue;
     }
-    if (state === "closed") {
-      deny(order, "Outside the window: the session is closed");
+    if (state !== "entries-open") {
+      deny(order, "New entries are closed");
       continue;
     }
-    if (state === "exits-only" && order.side === "buy") {
-      deny(order, "New entries are closed; only exits are permitted before the flatten");
+    if (accountLossPct >= limits.dailyLossLimitPct) {
+      deny(
+        order,
+        `Account loss limit reached (${accountLossPct.toFixed(2)}% >= ${limits.dailyLossLimitPct}% of capital)`,
+      );
       continue;
     }
-    if (lossPct >= limits.dailyLossLimitPct) {
-      deny(order, `Daily loss limit reached (${lossPct.toFixed(2)}% >= ${limits.dailyLossLimitPct}%)`);
+    if (strategyLossPct >= limits.strategyLossLimitPct) {
+      deny(
+        order,
+        `Strategy loss limit reached (${strategyLossPct.toFixed(2)}% >= ${limits.strategyLossLimitPct}% of its budget)`,
+      );
       continue;
     }
     if (submitted >= limits.maxOrdersPerDay) {
@@ -102,59 +127,87 @@ export function screen({ context, proposals, lossPct, at = new Date() }: GateInp
       deny(order, `Quantity must be a positive whole number, got ${order.quantity}`);
       continue;
     }
-
-    if (order.side === "buy") {
-      if (entries >= limits.maxEntriesPerDay) {
-        deny(order, `Entry budget spent (${limits.maxEntriesPerDay} for the day)`);
-        continue;
-      }
-      if (!tradeable.has(order.ticker)) {
-        deny(order, `${order.ticker} is not a candidate for this session`);
-        continue;
-      }
-
-      const candidate = context.candidates.find((c) => c.ticker === order.ticker);
-      const reference = order.limitPrice ?? candidate?.price;
-      if (!reference || reference <= 0) {
-        deny(order, `No usable price for ${order.ticker}`);
-        continue;
-      }
-
-      const notional = reference * order.quantity;
-      if (notional > limits.maxOrderValueKrw) {
-        deny(
-          order,
-          `Order value ${Math.round(notional).toLocaleString()} KRW exceeds the ${limits.maxOrderValueKrw.toLocaleString()} KRW cap`,
-        );
-        continue;
-      }
-      if (!held.has(order.ticker) && held.size >= limits.maxConcurrentPositions) {
-        deny(order, `Already holding ${held.size} positions (cap ${limits.maxConcurrentPositions})`);
-        continue;
-      }
-
-      held.add(order.ticker);
-      entries += 1;
-    } else {
-      const position = context.positions.find((p) => p.ticker === order.ticker);
-      if (!position) {
-        deny(order, `Cannot sell ${order.ticker}: no position held`);
-        continue;
-      }
-      if (order.quantity > position.sellableQuantity) {
-        deny(
-          order,
-          `Cannot sell ${order.quantity} of ${order.ticker}: only ${position.sellableQuantity} sellable`,
-        );
-        continue;
-      }
+    if (entries >= limits.maxEntriesPerDay) {
+      deny(order, `Entry budget spent (${limits.maxEntriesPerDay} for the day)`);
+      continue;
+    }
+    if (claimedByOthers.has(order.ticker)) {
+      deny(order, `${order.ticker} was already bought by another strategy today`);
+      continue;
+    }
+    // One buy per ticker per day, so the day's holding of a name maps to
+    // exactly one order -- which is what makes fills readable from the balance
+    // and profit attributable to a single strategy.
+    if (ownedToday.has(order.ticker) || takenThisTick.has(order.ticker)) {
+      deny(order, `${order.ticker} has already been bought today; no re-entry`);
+      continue;
+    }
+    if (!tradeable.has(order.ticker)) {
+      deny(order, `${order.ticker} is not a candidate for this session`);
+      continue;
     }
 
+    const candidate = context.candidates.find((c) => c.ticker === order.ticker);
+    const reference = order.limitPrice ?? candidate?.price;
+    if (!reference || reference <= 0) {
+      deny(order, `No usable price for ${order.ticker}`);
+      continue;
+    }
+
+    const notional = reference * order.quantity;
+    if (notional > context.maxOrderValueKrw) {
+      deny(
+        order,
+        `Order value ${Math.round(notional).toLocaleString()} KRW exceeds the ${context.maxOrderValueKrw.toLocaleString()} KRW cap`,
+      );
+      continue;
+    }
+
+    takenThisTick.add(order.ticker);
+    entries += 1;
     submitted += 1;
     verdicts.push({ allowed: true, order });
   }
 
   return verdicts;
+}
+
+/**
+ * Screen the exits the gate generated for itself.
+ *
+ * Deliberately thin. Loss limits and the daily order cap do not apply: both
+ * exist to stop the desk taking on more risk, and refusing a sell does the
+ * opposite by trapping a position the rules have already decided to close.
+ * What is left is the checks that decide whether the order can be filled at
+ * all.
+ */
+export function screenExits(
+  positions: Position[],
+  proposals: ProposedOrder[],
+  at: Date = new Date(),
+): Verdict[] {
+  const state = windowState(at);
+
+  return proposals.map((order): Verdict => {
+    if (state === "before") {
+      return { allowed: false, order, reason: "Outside the window: the session has not opened" };
+    }
+    const position = positions.find((p) => p.ticker === order.ticker);
+    if (!position) {
+      return { allowed: false, order, reason: `Cannot sell ${order.ticker}: no position held` };
+    }
+    if (!Number.isInteger(order.quantity) || order.quantity <= 0) {
+      return { allowed: false, order, reason: `Quantity must be a positive whole number` };
+    }
+    if (order.quantity > position.sellableQuantity) {
+      return {
+        allowed: false,
+        order,
+        reason: `Cannot sell ${order.quantity} of ${order.ticker}: only ${position.sellableQuantity} sellable`,
+      };
+    }
+    return { allowed: true, order };
+  });
 }
 
 /**
@@ -167,13 +220,13 @@ export function screen({ context, proposals, lossPct, at = new Date() }: GateInp
  * bought and the quantity remaining, the realised fraction is arithmetic, and
  * arithmetic cannot drift out of sync the way a flag can.
  */
-export function mandatoryExits(context: TickContext, at: Date = new Date()): ProposedOrder[] {
+export function mandatoryExits(positions: Position[], at: Date = new Date()): ProposedOrder[] {
   const state = windowState(at);
   if (state === "before") return [];
 
   const orders: ProposedOrder[] = [];
 
-  for (const position of context.positions) {
+  for (const position of positions) {
     if (position.sellableQuantity <= 0) continue;
 
     if (state === "closed") {
@@ -183,6 +236,32 @@ export function mandatoryExits(context: TickContext, at: Date = new Date()): Pro
         quantity: position.sellableQuantity,
         reason: "End of window: flattening",
       });
+      continue;
+    }
+
+    // A position opened with its own levels is closed on those levels instead.
+    // The strategy that set them was sizing its risk against the bar it entered
+    // on, and a percentage of cost is a different promise entirely.
+    if (position.stopLoss !== null || position.takeProfit !== null) {
+      if (position.stopLoss !== null && position.currentPrice <= position.stopLoss) {
+        orders.push({
+          ticker: position.ticker,
+          side: "sell",
+          quantity: position.sellableQuantity,
+          reason: `Stop at ${position.stopLoss.toLocaleString()} (${position.currentPrice.toLocaleString()} now)`,
+        });
+        continue;
+      }
+      if (position.takeProfit !== null && position.currentPrice >= position.takeProfit) {
+        orders.push({
+          ticker: position.ticker,
+          side: "sell",
+          quantity: position.sellableQuantity,
+          reason: `Take profit at ${position.takeProfit.toLocaleString()} (${position.currentPrice.toLocaleString()} now)`,
+        });
+      }
+      // Neither level reached: this position waits. The house ladder does not
+      // apply to it, so there is nothing else to check.
       continue;
     }
 

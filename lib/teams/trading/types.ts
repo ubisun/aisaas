@@ -33,11 +33,25 @@ export type Position = {
   currentPrice: number;
   /** Unrealised, in percent of cost. */
   pnlPct: number;
+  /**
+   * Exit levels the entry was placed with, in KRW.
+   *
+   * Null means the house rules govern this position. When set, they replace the
+   * percentage stop and the profit ladder for this position only -- a strategy
+   * whose edge is its risk-to-reward cannot be held to exits priced as a
+   * percentage of cost.
+   */
+  stopLoss: number | null;
+  takeProfit: number | null;
 };
 
 export type TickContext = {
   /** KRX trading date, Asia/Seoul. */
   tradeDate: string;
+  /** The session before this one, for indicators that need warming up. */
+  previousTradeDate: string;
+  /** The run this tick belongs to, for strategies that keep state. */
+  runId: string;
   /** Seoul wall-clock time of this tick, HH:mm. */
   observedAt: string;
   /** Minutes remaining before new entries are refused. */
@@ -58,6 +72,8 @@ export type TickContext = {
   ordersSoFar: number;
   /** Notional ceiling for a single order, in KRW. */
   maxOrderValueKrw: number;
+  /** This strategy's whole share of the day's capital, in KRW. */
+  budgetKrw: number;
 };
 
 export type ProposedOrder = {
@@ -68,6 +84,16 @@ export type ProposedOrder = {
   limitPrice?: number;
   /** Why. Recorded whether or not the order survives the gate. */
   reason: string;
+  /**
+   * What this entry is worth risking, in KRW. Optional: a strategy with no
+   * opinion about its exit gets the house rules.
+   *
+   * Setting these is not the same as proposing a sell. The strategy still
+   * cannot ask to close anything -- it is stating the terms of the position it
+   * is opening, and the risk gate is what acts on them later.
+   */
+  stopLoss?: number;
+  takeProfit?: number;
 };
 
 export type StrategyProposal = {
@@ -81,3 +107,8 @@ export type Strategy = {
   description: string;
   propose(context: TickContext): Promise<StrategyProposal>;
 };
+
+/** What the risk gate decided about one proposed order. */
+export type Verdict =
+  | { allowed: true; order: ProposedOrder }
+  | { allowed: false; order: ProposedOrder; reason: string };

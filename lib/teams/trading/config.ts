@@ -18,41 +18,82 @@ export const TRADING_CONFIG = {
    */
   environment: "demo" as "demo" | "real",
 
-  /** Asia/Seoul wall-clock bounds of the trading window. */
+  /**
+   * What the desk may deploy in a day, in KRW.
+   *
+   * Deliberately a constant rather than a reading of the account. The paper
+   * account holds ₩100m and the live account is expected to hold more than
+   * this too; the desk is sized by decision, not by whatever happens to be on
+   * deposit. Every position is flattened before the close, so the same amount
+   * is available again the next morning regardless of the day's result.
+   *
+   * Divided evenly among the strategies on duty -- see `strategyBudgetKrw`.
+   */
+  capitalKrw: 20_000_000,
+
+  /**
+   * Asia/Seoul wall-clock bounds of the trading window.
+   *
+   * Widened from the original 09:10-10:30 morning to make room for a strategy
+   * that cannot act until the first 30-minute bar has closed at 09:30 and then
+   * needs time for a 2R target to be reached.
+   *
+   * The flatten is deliberately not 15:30. KRX runs a closing single-price
+   * auction from 15:20, so an order sent at the bell does not trade and the
+   * position carries overnight -- which would break the premise that the same
+   * capital is available again the next morning. 15:15 is still continuous
+   * trading, where a market order fills.
+   */
   window: {
     openHour: 9,
     openMinute: 10,
     /** No new position may be opened at or after this. */
-    lastEntryHour: 10,
-    lastEntryMinute: 15,
+    lastEntryHour: 11,
+    lastEntryMinute: 30,
     /** Everything still held is flattened at this time. */
-    closeHour: 10,
-    closeMinute: 30,
+    closeHour: 15,
+    closeMinute: 15,
   },
 
   limits: {
     /**
-     * Entries permitted per day.
+     * Entries permitted per strategy per day.
      *
-     * The brief said five trades; this is a ceiling rather than a quota on
-     * purpose. Forcing the fifth entry when nothing is worth buying is how a
-     * strategy loses money to satisfy a counter. The strategy is told the
-     * budget and allowed to spend less.
+     * A ceiling rather than a quota on purpose. Forcing the last entry when
+     * nothing is worth buying is how a strategy loses money to satisfy a
+     * counter -- the strategy is told the budget and allowed to spend less.
+     *
+     * This also fixes the per-order ceiling: a strategy's budget divided by
+     * this number. Two entries of half the budget each.
      */
-    maxEntriesPerDay: 5,
-    /** Distinct tickers that may be held at once. */
-    maxConcurrentPositions: 3,
-    /** Notional cap for a single order, in KRW. */
-    maxOrderValueKrw: 1_000_000,
-    /** Hard ceiling on orders of any kind, so a loop cannot run away. */
-    maxOrdersPerDay: 30,
-    /** Candidates the strategy may consider. */
-    maxCandidates: 8,
+    maxEntriesPerDay: 2,
+
     /**
-     * Session halts when the day's loss reaches this fraction of deployed
-     * capital. Expressed positive.
+     * Hard ceiling on strategy-proposed orders, so a loop cannot run away.
+     * Mandatory exits are exempt -- they are generated from the positions
+     * actually held, cannot multiply, and blocking one would trap a position
+     * the risk rules have already decided to close.
      */
-    dailyLossLimitPct: 3,
+    maxOrdersPerDay: 30,
+
+    /** Candidates a strategy may consider. */
+    maxCandidates: 30,
+
+    /**
+     * A strategy stops opening positions when its own loss reaches this
+     * fraction of the budget allocated to it. Expressed positive.
+     */
+    strategyLossLimitPct: 5,
+
+    /**
+     * Account-wide circuit breaker, against `capitalKrw` rather than against
+     * what happens to be deployed. Expressed positive.
+     *
+     * Both limits gate entries only. Exits are never blocked by a loss limit:
+     * the point of hitting one is to stop taking risk, and refusing the sells
+     * would do the opposite by trapping the desk in what it already holds.
+     */
+    dailyLossLimitPct: 10,
   },
 
   /**
@@ -87,6 +128,20 @@ export const TRADING_CONFIG = {
   /** Candidate screening. */
   screening: {
     /**
+     * Which KIS ranking lists to merge.
+     *
+     * Measured, not assumed: the ranking endpoint returns exactly 30 rows with
+     * no paging cursor and no `tr_cont` header, and asking for "all markets"
+     * (0000) returns what is effectively the KOSPI list, because KOSPI large
+     * caps take the top of any turnover ranking. Asking each market separately
+     * costs one extra 1.2s call and roughly doubles the pool -- and the names
+     * it adds are exactly the ones this screen exists to find, since traded
+     * value against market cap favours smaller companies.
+     *
+     * 0001 is KOSPI, 1001 is KOSDAQ.
+     */
+    markets: ["0001", "1001"] as const,
+    /**
      * Traded value against market capitalisation, in percent -- the "is this
      * actually moving relative to its size" test. A large cap ticking over on
      * ordinary volume fails it; a mid cap being repriced passes.
@@ -100,17 +155,60 @@ export const TRADING_CONFIG = {
      */
     minPriceKrw: 2000,
     /**
-     * How far down the turnover ranking to look before screening.
+     * How far down each market's ranking to look.
      *
-     * This used to be bounded by time: every name cost a throttled quote call
-     * at ~1.2s to learn its market cap, so 15 names was already 18 seconds. Now
-     * that caps are cached per trading day, only the first screen of the
-     * morning pays that and the rest cost a single ranking call, so the bound
-     * is usefulness rather than the clock. Widening it is a real option once
-     * there is enough recorded history to say whether the names below 15 were
-     * worth seeing.
+     * 30 is the endpoint's own limit, not a choice -- it returns 30 rows and
+     * offers no way to ask for more. The pool is widened by market, not by
+     * depth.
      */
-    rankPoolSize: 15,
+    rankPoolSize: 30,
+  },
+
+  /**
+   * The opening-range strategy's own numbers.
+   *
+   * Taken from the source specification rather than invented, so that what the
+   * strategy does can be checked against the document it came from. The
+   * document is a reconstruction of a YouTube method and is explicit that its
+   * results are unverified -- these are starting points to be measured, not
+   * settled values.
+   */
+  orb: {
+    /** Minutes after the open that form the reference range. */
+    rangeMinutes: 30,
+    /** Bar size the strategy makes decisions on, in minutes. */
+    triggerMinutes: 5,
+    /** A breakout bar this many times ATR(14) counts as momentum on its own. */
+    giantBarAtrMultiple: 1.5,
+    /** ...and this many times the volume average alongside it. */
+    giantBarVolumeMultiple: 2.0,
+    /** Consecutive bullish bars that count as momentum instead. */
+    consecutiveBars: 3,
+    atrPeriod: 14,
+    volumeMaPeriod: 20,
+    /** How near the range high a pullback must come, as a fraction. */
+    retestBandBelow: 0.002,
+    retestBandAbove: 0.002,
+    /** A pin bar's lower wick, as a fraction of the whole bar. */
+    pinbarWickFraction: 0.6,
+    /** Reward as a multiple of the risk taken. The document's 2R. */
+    rewardMultiple: 2.0,
+    /** Ticks below the reference low the stop is placed. */
+    stopBufferTicks: 1,
+    /**
+     * How much of its budget the strategy risks on one trade, in percent.
+     *
+     * This is the other half of the document's sizing rule -- quantity is the
+     * risk budget divided by the distance to the stop, so a tight stop buys
+     * more shares and a wide one buys fewer, and the loss when the stop is hit
+     * is the same either way. The desk's per-order ceiling still applies and
+     * the smaller of the two wins.
+     */
+    riskPerTradePct: 0.5,
+    /** Stop-outs before the strategy stands itself down for the day. */
+    killSwitchLosses: 2,
+    /** Names carried into the session. Each costs one 1.2s call per tick. */
+    watchlistSize: 10,
   },
 
   /**
@@ -132,3 +230,30 @@ export const TRADING_CONFIG = {
 } as const;
 
 export type TradingConfig = typeof TRADING_CONFIG;
+
+/**
+ * A single strategy's share of the day's capital.
+ *
+ * Fixed once at the open and carried in the run's metadata rather than
+ * recomputed per tick: adding or retiring a strategy mid-session would
+ * otherwise change the budget that orders already placed were sized against.
+ */
+export function strategyBudgetKrw(liveStrategyCount: number, registeredCount = 1): number {
+  // With nothing live -- a shadow session -- the divisor falls back to how many
+  // strategies are registered, so each one is sized as it would be if promoted.
+  // Sizing a shadow strategy against the whole desk would make its recorded
+  // quantities meaningless for judging it later, which is the only reason to
+  // run it at all.
+  const divisor = liveStrategyCount > 0 ? liveStrategyCount : registeredCount;
+  return Math.floor(TRADING_CONFIG.capitalKrw / Math.max(1, divisor));
+}
+
+/**
+ * The most one order may be worth, for a strategy holding `budgetKrw`.
+ *
+ * Derived rather than configured, so the entry count and the order ceiling
+ * cannot drift apart. Two entries of half the budget, by construction.
+ */
+export function maxOrderValueKrw(budgetKrw: number): number {
+  return Math.floor(budgetKrw / TRADING_CONFIG.limits.maxEntriesPerDay);
+}
