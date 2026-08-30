@@ -2,6 +2,7 @@ import { notify } from "@/lib/notify";
 import { setPhase } from "@/lib/runs";
 import { createAdminClient } from "@/lib/supabase/admin";
 
+import { previousTradeDate } from "./calendar";
 import { latestSectorOutlook, screenNow, type ScreenedCandidate } from "./candidates";
 import { maxOrderValueKrw, strategyBudgetKrw, TRADING_CONFIG } from "./config";
 import { cancelOrder, fetchAccountSummary, fetchHoldings, placeOrder, type Holding } from "./kis";
@@ -155,6 +156,8 @@ type OrderRow = {
   status: string;
   filled_quantity: number;
   kis_order_no: string | null;
+  stop_loss: number | null;
+  take_profit: number | null;
 };
 
 /**
@@ -232,24 +235,37 @@ function ownerMap(orders: OrderRow[], tickStrategy: Map<string, string>): Map<st
 
 function buildPositions(holdings: Holding[], orders: OrderRow[]): Position[] {
   const boughtByTicker = new Map<string, number>();
+  const levelsByTicker = new Map<string, { stop: number | null; target: number | null }>();
+
   for (const order of orders) {
     if (order.side !== "buy") continue;
     if (order.status !== "submitted" && order.status !== "filled") continue;
     // The ladder measures against what was actually acquired, not what was
     // asked for; an unfilled remainder was never part of the position.
     boughtByTicker.set(order.ticker, order.filled_quantity || order.quantity);
+    // One buy per ticker per day, so a position has at most one set of levels
+    // and there is nothing to reconcile between two entries.
+    levelsByTicker.set(order.ticker, {
+      stop: order.stop_loss === null ? null : Number(order.stop_loss),
+      target: order.take_profit === null ? null : Number(order.take_profit),
+    });
   }
 
-  return holdings.map((holding) => ({
-    ticker: holding.ticker,
-    name: holding.name,
-    quantity: holding.quantity,
-    sellableQuantity: holding.sellableQuantity,
-    boughtQuantity: boughtByTicker.get(holding.ticker) ?? holding.quantity,
-    averagePrice: holding.averagePrice,
-    currentPrice: holding.currentPrice,
-    pnlPct: holding.pnlPct,
-  }));
+  return holdings.map((holding) => {
+    const levels = levelsByTicker.get(holding.ticker);
+    return {
+      ticker: holding.ticker,
+      name: holding.name,
+      quantity: holding.quantity,
+      sellableQuantity: holding.sellableQuantity,
+      boughtQuantity: boughtByTicker.get(holding.ticker) ?? holding.quantity,
+      averagePrice: holding.averagePrice,
+      currentPrice: holding.currentPrice,
+      pnlPct: holding.pnlPct,
+      stopLoss: levels?.stop ?? null,
+      takeProfit: levels?.target ?? null,
+    };
+  });
 }
 
 /** Unrealised loss across a set of positions, as a positive percent of `base`. */
@@ -316,6 +332,8 @@ async function submitVerdicts(
       side: verdict.order.side,
       quantity: verdict.order.quantity,
       limit_price: verdict.order.limitPrice ?? null,
+      stop_loss: verdict.order.stopLoss ?? null,
+      take_profit: verdict.order.takeProfit ?? null,
     };
 
     if (!verdict.allowed) {
@@ -418,7 +436,7 @@ export async function runTick(runId: string, tradeDate: string): Promise<TickOut
   const [{ data: orderRows }, { data: tickRows }, holdings, report] = await Promise.all([
     supabase
       .from("orders")
-      .select("id, tick_id, ticker, side, quantity, status, filled_quantity, kis_order_no")
+      .select("id, tick_id, ticker, side, quantity, status, filled_quantity, kis_order_no, stop_loss, take_profit")
       .eq("run_id", runId)
       .in("status", ["submitted", "filled"]),
     supabase.from("strategy_ticks").select("id, strategy").eq("run_id", runId),
@@ -501,6 +519,8 @@ export async function runTick(runId: string, tradeDate: string): Promise<TickOut
 
       const context: TickContext = {
         tradeDate,
+        previousTradeDate: previousTradeDate(),
+        runId,
         observedAt: seoulClock(),
         minutesToLastEntry: minutesToLastEntry(),
         candidates,

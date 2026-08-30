@@ -1,6 +1,7 @@
 import type { Strategy } from "../types";
 
 import { agentStrategy } from "./agent";
+import { orbStrategy } from "./orb";
 
 /**
  * Who is trading today.
@@ -32,6 +33,13 @@ export type RegisteredStrategy = {
 };
 
 export const REGISTRY: RegisteredStrategy[] = [
+  /**
+   * Ranked above the discretionary desk on purpose. Its entries are tied to a
+   * specific bar -- a confirmation candle at the range line happens once and is
+   * gone -- whereas a model reading a shortlist can simply pick another name.
+   * Losing a ticker costs it the trade; losing one costs the other a choice.
+   */
+  { strategy: orbStrategy, priority: 110, live: true },
   { strategy: agentStrategy, priority: 100, live: true },
 ];
 

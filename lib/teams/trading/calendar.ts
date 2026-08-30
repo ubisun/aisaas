@@ -27,3 +27,18 @@ export function isLikelyTradingDay(at: Date = new Date()): boolean {
   const day = seoulWeekday.format(at);
   return day !== "Sat" && day !== "Sun";
 }
+
+/**
+ * The session before `at`, as YYYY-MM-DD in Asia/Seoul.
+ *
+ * Weekends only, like `isLikelyTradingDay`. A holiday will return a date the
+ * market was shut, and the bars for it come back empty -- which the caller
+ * already has to handle, because a newly listed name has no history either.
+ */
+export function previousTradeDate(at: Date = new Date()): string {
+  const cursor = new Date(at);
+  do {
+    cursor.setUTCDate(cursor.getUTCDate() - 1);
+  } while (!isLikelyTradingDay(cursor));
+  return seoulTradeDate(cursor);
+}

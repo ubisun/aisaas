@@ -239,6 +239,32 @@ export function mandatoryExits(positions: Position[], at: Date = new Date()): Pr
       continue;
     }
 
+    // A position opened with its own levels is closed on those levels instead.
+    // The strategy that set them was sizing its risk against the bar it entered
+    // on, and a percentage of cost is a different promise entirely.
+    if (position.stopLoss !== null || position.takeProfit !== null) {
+      if (position.stopLoss !== null && position.currentPrice <= position.stopLoss) {
+        orders.push({
+          ticker: position.ticker,
+          side: "sell",
+          quantity: position.sellableQuantity,
+          reason: `Stop at ${position.stopLoss.toLocaleString()} (${position.currentPrice.toLocaleString()} now)`,
+        });
+        continue;
+      }
+      if (position.takeProfit !== null && position.currentPrice >= position.takeProfit) {
+        orders.push({
+          ticker: position.ticker,
+          side: "sell",
+          quantity: position.sellableQuantity,
+          reason: `Take profit at ${position.takeProfit.toLocaleString()} (${position.currentPrice.toLocaleString()} now)`,
+        });
+      }
+      // Neither level reached: this position waits. The house ladder does not
+      // apply to it, so there is nothing else to check.
+      continue;
+    }
+
     if (position.pnlPct <= exits.stopLossPct) {
       orders.push({
         ticker: position.ticker,

@@ -31,16 +31,28 @@ export const TRADING_CONFIG = {
    */
   capitalKrw: 20_000_000,
 
-  /** Asia/Seoul wall-clock bounds of the trading window. */
+  /**
+   * Asia/Seoul wall-clock bounds of the trading window.
+   *
+   * Widened from the original 09:10-10:30 morning to make room for a strategy
+   * that cannot act until the first 30-minute bar has closed at 09:30 and then
+   * needs time for a 2R target to be reached.
+   *
+   * The flatten is deliberately not 15:30. KRX runs a closing single-price
+   * auction from 15:20, so an order sent at the bell does not trade and the
+   * position carries overnight -- which would break the premise that the same
+   * capital is available again the next morning. 15:15 is still continuous
+   * trading, where a market order fills.
+   */
   window: {
     openHour: 9,
     openMinute: 10,
     /** No new position may be opened at or after this. */
-    lastEntryHour: 10,
-    lastEntryMinute: 15,
+    lastEntryHour: 11,
+    lastEntryMinute: 30,
     /** Everything still held is flattened at this time. */
-    closeHour: 10,
-    closeMinute: 30,
+    closeHour: 15,
+    closeMinute: 15,
   },
 
   limits: {
@@ -150,6 +162,43 @@ export const TRADING_CONFIG = {
      * depth.
      */
     rankPoolSize: 30,
+  },
+
+  /**
+   * The opening-range strategy's own numbers.
+   *
+   * Taken from the source specification rather than invented, so that what the
+   * strategy does can be checked against the document it came from. The
+   * document is a reconstruction of a YouTube method and is explicit that its
+   * results are unverified -- these are starting points to be measured, not
+   * settled values.
+   */
+  orb: {
+    /** Minutes after the open that form the reference range. */
+    rangeMinutes: 30,
+    /** Bar size the strategy makes decisions on, in minutes. */
+    triggerMinutes: 5,
+    /** A breakout bar this many times ATR(14) counts as momentum on its own. */
+    giantBarAtrMultiple: 1.5,
+    /** ...and this many times the volume average alongside it. */
+    giantBarVolumeMultiple: 2.0,
+    /** Consecutive bullish bars that count as momentum instead. */
+    consecutiveBars: 3,
+    atrPeriod: 14,
+    volumeMaPeriod: 20,
+    /** How near the range high a pullback must come, as a fraction. */
+    retestBandBelow: 0.002,
+    retestBandAbove: 0.002,
+    /** A pin bar's lower wick, as a fraction of the whole bar. */
+    pinbarWickFraction: 0.6,
+    /** Reward as a multiple of the risk taken. The document's 2R. */
+    rewardMultiple: 2.0,
+    /** Ticks below the reference low the stop is placed. */
+    stopBufferTicks: 1,
+    /** Consecutive stop-outs before the strategy stands itself down. */
+    killSwitchLosses: 2,
+    /** Names carried into the session. Each costs one 1.2s call per tick. */
+    watchlistSize: 10,
   },
 
   /**
