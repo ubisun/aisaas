@@ -430,9 +430,13 @@ export async function cancelOrder(params: {
   ticker: string;
   quantity: number;
 }): Promise<{ ok: boolean; detail: string }> {
-  const { account, product } = credentials();
-
   try {
+    // Inside the try with everything else: this function's contract is that it
+    // reports a failure rather than raising one, and the caller only logs what
+    // it returns. A credentials failure escaping would take down a tick that
+    // was otherwise fine.
+    const { account, product } = credentials();
+
     const payload = await call<{ output?: { ODNO?: string }; msg1?: string }>(
       "/uapi/domestic-stock/v1/trading/order-rvsecncl",
       TR[env()].cancel,

@@ -23,7 +23,14 @@ npm start        # serve the production build
 npm run lint     # eslint (flat config)
 ```
 
-There is no test runner yet. `npx tsc --noEmit` is the only type check (`noEmit` is already set in tsconfig).
+```bash
+npm test         # vitest, the merge gate
+npm run test:watch
+```
+
+`npm test` must pass before anything merges. It runs in about a second and needs no Docker, no credentials and no network — a gate that needs setting up is one that gets skipped. `npx tsc --noEmit` is the type check (`noEmit` is already set in tsconfig).
+
+Tests live in `tests/`, organised by department, and `tests/README.md` says where a new one goes. The short version: a new strategy gets its own file for its own decisions and needs no changes to `tests/trading/invariants.test.ts`, which runs against generated proposals and so covers new strategies by construction. Only a new promise the desk makes belongs in that file.
 
 ## Stack
 

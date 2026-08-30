@@ -156,7 +156,7 @@ async function recordCandidates(
   if (error) console.warn(`recording candidates failed: ${error.message}`);
 }
 
-type OrderRow = {
+export type OrderRow = {
   id: string;
   tick_id: string | null;
   ticker: string;
@@ -230,7 +230,10 @@ async function reconcileFills(orders: OrderRow[], holdings: Holding[]): Promise<
  * name back and forth, and the clean attribution that makes per-strategy profit
  * meaningful would go with it.
  */
-function ownerMap(orders: OrderRow[], tickStrategy: Map<string, string>): Map<string, string> {
+export function ownerMap(
+  orders: OrderRow[],
+  tickStrategy: Map<string, string>,
+): Map<string, string> {
   const owners = new Map<string, string>();
   for (const order of orders) {
     if (order.side !== "buy") continue;
@@ -242,7 +245,7 @@ function ownerMap(orders: OrderRow[], tickStrategy: Map<string, string>): Map<st
   return owners;
 }
 
-function buildPositions(holdings: Holding[], orders: OrderRow[]): Position[] {
+export function buildPositions(holdings: Holding[], orders: OrderRow[]): Position[] {
   const boughtByTicker = new Map<string, number>();
   const levelsByTicker = new Map<string, { stop: number | null; target: number | null }>();
 
@@ -278,7 +281,7 @@ function buildPositions(holdings: Holding[], orders: OrderRow[]): Position[] {
 }
 
 /** Unrealised loss across a set of positions, as a positive percent of `base`. */
-function lossPctOf(positions: Position[], base: number): number {
+export function lossPctOf(positions: Position[], base: number): number {
   if (base <= 0) return 0;
   const pnl = positions.reduce(
     (sum, p) => sum + (p.currentPrice - p.averagePrice) * p.quantity,

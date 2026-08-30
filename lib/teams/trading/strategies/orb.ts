@@ -127,7 +127,7 @@ async function saveState(
 }
 
 /** The higher-timeframe filter: is the daily picture pointing up? */
-function trendIsBullish(daily: Candle[]): boolean {
+export function trendIsBullish(daily: Candle[]): boolean {
   if (daily.length < 2) return false;
 
   const today = daily[daily.length - 1];
@@ -140,7 +140,7 @@ function trendIsBullish(daily: Candle[]): boolean {
 }
 
 /** A single bar carrying enough force to be worth entering on immediately. */
-function isGiantBar(bar: Candle, history: Candle[]): boolean {
+export function isGiantBar(bar: Candle, history: Candle[]): boolean {
   const range = atr(history, orb.atrPeriod);
   const volume = volumeMa(history, orb.volumeMaPeriod);
   if (range === null || volume === null) return false;
@@ -152,18 +152,18 @@ function isGiantBar(bar: Candle, history: Candle[]): boolean {
 }
 
 /** Momentum by persistence instead of by size: N closes up in a row. */
-function isRun(bars: Candle[]): boolean {
+export function isRun(bars: Candle[]): boolean {
   if (bars.length < orb.consecutiveBars) return false;
   return bars.slice(-orb.consecutiveBars).every((b) => b.close > b.open);
 }
 
-function isPinbar(bar: Candle): boolean {
+export function isPinbar(bar: Candle): boolean {
   const span = bar.high - bar.low;
   if (span <= 0) return false;
   return bar.close > bar.open && bar.open - bar.low > orb.pinbarWickFraction * span;
 }
 
-function isBullishEngulfing(bar: Candle, previous: Candle | undefined): boolean {
+export function isBullishEngulfing(bar: Candle, previous: Candle | undefined): boolean {
   if (!previous) return false;
   return bar.close > previous.open && previous.close < previous.open;
 }
@@ -177,7 +177,7 @@ function isBullishEngulfing(bar: Candle, previous: Candle | undefined): boolean 
  * tight enough to justify a large position must not quietly buy one the gate
  * would then reject.
  */
-function sizePosition(
+export function sizePosition(
   entry: number,
   stop: number,
   budgetPerOrder: number,
