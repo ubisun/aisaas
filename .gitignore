@@ -45,3 +45,8 @@ next-env.d.ts
 
 # Supabase CLI scratch state
 supabase/.temp/
+
+# Local reference material -- source documents read while designing a strategy,
+# not inputs the code reads. Kept out of the repo because they are large and
+# nothing builds from them.
+/references/
