@@ -14,8 +14,15 @@ import {
   seoulClock,
   windowState,
 } from "./risk";
-import { activeStrategies, liveStrategies } from "./strategies";
-import type { Candidate, Position, ProposedOrder, TickContext, Verdict } from "./types";
+import { activeStrategies, liveStrategies, REGISTRY } from "./strategies";
+import type {
+  Candidate,
+  Position,
+  ProposedOrder,
+  StrategyProposal,
+  TickContext,
+  Verdict,
+} from "./types";
 
 /**
  * A trading morning, from opening the day to the closing briefing.
@@ -68,7 +75,7 @@ export async function openSession(
   ]);
 
   const live = liveStrategies();
-  const budget = strategyBudgetKrw(live.length);
+  const budget = strategyBudgetKrw(live.length, REGISTRY.length);
 
   // The desk is sized by configuration, not by the deposit -- but if the
   // deposit cannot cover the configured capital the orders will be refused by
@@ -478,7 +485,7 @@ export async function runTick(runId: string, tradeDate: string): Promise<TickOut
   await recordCandidates(runId, screened);
 
   const live = liveStrategies();
-  const budget = strategyBudgetKrw(live.length);
+  const budget = strategyBudgetKrw(live.length, REGISTRY.length);
   const orderCap = maxOrderValueKrw(budget);
   const accountLossPct = lossPctOf(positions, TRADING_CONFIG.capitalKrw);
   const claimed = new Map(owners);
@@ -533,7 +540,18 @@ export async function runTick(runId: string, tradeDate: string): Promise<TickOut
         budgetKrw: budget,
       };
 
-      const proposal = await registered.strategy.propose(context);
+      // One strategy's failure must not take the tick down with it. A desk
+      // where an exhausted API key on one strategy stops another from running
+      // its stop-losses is a worse failure than the one it started with, and
+      // the recorded reason is what makes the cause findable afterwards.
+      let proposal: StrategyProposal;
+      try {
+        proposal = await registered.strategy.propose(context);
+      } catch (cause) {
+        const detail = cause instanceof Error ? cause.message : String(cause);
+        console.error(`strategy ${name} failed: ${detail}`);
+        proposal = { orders: [], reasoning: `Strategy failed: ${detail.slice(0, 500)}` };
+      }
 
       const tickId = await recordTick(
         runId,

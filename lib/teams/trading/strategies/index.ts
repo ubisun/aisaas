@@ -39,8 +39,16 @@ export const REGISTRY: RegisteredStrategy[] = [
    * gone -- whereas a model reading a shortlist can simply pick another name.
    * Losing a ticker costs it the trade; losing one costs the other a choice.
    */
-  { strategy: orbStrategy, priority: 110, live: true },
-  { strategy: agentStrategy, priority: 100, live: true },
+  //
+  // Both shadow as of 2026-08-30. The multi-strategy dispatch, the ticker
+  // claim and the opening-range state machine have all type-checked and none
+  // of them has ever run. A shadow session exercises every one of those paths
+  // and records what each strategy would have done, without an order being the
+  // thing that discovers the bug.
+  //
+  // Promote by flipping `live` once a session's tick records read correctly.
+  { strategy: orbStrategy, priority: 110, live: false },
+  { strategy: agentStrategy, priority: 100, live: false },
 ];
 
 /** Live strategies, highest priority first. */

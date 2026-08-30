@@ -238,8 +238,14 @@ export type TradingConfig = typeof TRADING_CONFIG;
  * recomputed per tick: adding or retiring a strategy mid-session would
  * otherwise change the budget that orders already placed were sized against.
  */
-export function strategyBudgetKrw(liveStrategyCount: number): number {
-  return Math.floor(TRADING_CONFIG.capitalKrw / Math.max(1, liveStrategyCount));
+export function strategyBudgetKrw(liveStrategyCount: number, registeredCount = 1): number {
+  // With nothing live -- a shadow session -- the divisor falls back to how many
+  // strategies are registered, so each one is sized as it would be if promoted.
+  // Sizing a shadow strategy against the whole desk would make its recorded
+  // quantities meaningless for judging it later, which is the only reason to
+  // run it at all.
+  const divisor = liveStrategyCount > 0 ? liveStrategyCount : registeredCount;
+  return Math.floor(TRADING_CONFIG.capitalKrw / Math.max(1, divisor));
 }
 
 /**
