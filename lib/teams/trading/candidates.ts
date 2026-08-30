@@ -160,8 +160,22 @@ async function marketCaps(
  * have cleared it, and the list fills out as the morning goes on.
  */
 export async function screenNow(tradeDate: string): Promise<ScreenedCandidate[]> {
-  const ranked = (await fetchVolumeRank()).slice(0, screening.rankPoolSize);
-  const liquid = ranked.filter((row) => row.turnover >= screening.minTurnoverKrw);
+  // One ranking call per market, merged. Asking for "all markets" returns what
+  // is effectively the KOSPI list, which buries exactly the mid caps this
+  // screen is looking for.
+  const byTicker = new Map<string, Awaited<ReturnType<typeof fetchVolumeRank>>[number]>();
+  for (const market of screening.markets) {
+    const rows = (await fetchVolumeRank(market)).slice(0, screening.rankPoolSize);
+    for (const row of rows) {
+      const existing = byTicker.get(row.ticker);
+      // Keep the better rank if a name somehow appears in both lists.
+      if (!existing || row.rank < existing.rank) byTicker.set(row.ticker, row);
+    }
+  }
+
+  const liquid = [...byTicker.values()].filter(
+    (row) => row.turnover >= screening.minTurnoverKrw,
+  );
   if (!liquid.length) return [];
 
   const caps = await marketCaps(liquid, tradeDate);

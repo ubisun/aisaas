@@ -2,7 +2,6 @@ import Anthropic from "@anthropic-ai/sdk";
 
 import { recordUsage } from "@/lib/llm";
 
-import { TRADING_CONFIG } from "../config";
 import type { Strategy, StrategyProposal, TickContext } from "../types";
 
 /**
@@ -108,7 +107,7 @@ ${candidates}
 Currently held:
 ${positions}
 
-Budget: ${context.entriesUsed} of ${context.entryBudget} entries used. At most ${TRADING_CONFIG.limits.maxConcurrentPositions} positions at once. No single order above ${context.maxOrderValueKrw.toLocaleString()} KRW.`;
+Budget: ${context.entriesUsed} of ${context.entryBudget} entries used. No single order above ${context.maxOrderValueKrw.toLocaleString()} KRW. Each name may be bought once a day only, and the shortlist already excludes anything another desk has taken.`;
 }
 
 export const agentStrategy: Strategy = {

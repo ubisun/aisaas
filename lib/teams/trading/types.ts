@@ -81,3 +81,8 @@ export type Strategy = {
   description: string;
   propose(context: TickContext): Promise<StrategyProposal>;
 };
+
+/** What the risk gate decided about one proposed order. */
+export type Verdict =
+  | { allowed: true; order: ProposedOrder }
+  | { allowed: false; order: ProposedOrder; reason: string };

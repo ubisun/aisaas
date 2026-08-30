@@ -24,8 +24,8 @@ const HOSTS = {
  * posts still quoting the retired VTTC0802U.
  */
 const TR = {
-  demo: { sell: "VTTC0011U", buy: "VTTC0012U", balance: "VTTC8434R" },
-  real: { sell: "TTTC0011U", buy: "TTTC0012U", balance: "TTTC8434R" },
+  demo: { sell: "VTTC0011U", buy: "VTTC0012U", balance: "VTTC8434R", cancel: "VTTC0013U" },
+  real: { sell: "TTTC0011U", buy: "TTTC0012U", balance: "TTTC8434R", cancel: "TTTC0013U" },
 } as const;
 
 const PRICE_TR = "FHKST01010100";
@@ -229,8 +229,12 @@ export type RankedStock = {
 /**
  * Stocks ranked by traded value so far today. This is the raw pool candidates
  * are drawn from -- what is actually moving, before any view about sectors.
+ *
+ * `market` selects the ranking list: 0001 KOSPI, 1001 KOSDAQ, 0000 all. The
+ * endpoint returns 30 rows and offers no paging, and "all" is dominated by
+ * KOSPI large caps, so the caller asks per market and merges.
  */
-export async function fetchVolumeRank(): Promise<RankedStock[]> {
+export async function fetchVolumeRank(market = "0000"): Promise<RankedStock[]> {
   const payload = await call<{ output?: Record<string, string>[] }>(
     "/uapi/domestic-stock/v1/quotations/volume-rank",
     VOLUME_RANK_TR,
@@ -240,8 +244,7 @@ export async function fetchVolumeRank(): Promise<RankedStock[]> {
         // "J" is the KRX board, which covers both KOSPI and KOSDAQ.
         FID_COND_MRKT_DIV_CODE: "J",
         FID_COND_SCR_DIV_CODE: "20171",
-        // "0000" is every sector rather than one industry code.
-        FID_INPUT_ISCD: "0000",
+        FID_INPUT_ISCD: market,
         // Ordinary shares only -- preferred lines move on their own dynamics.
         FID_DIV_CLS_CODE: "1",
         // "3" ranks by traded value, which is what "being repriced" looks like.
@@ -402,4 +405,49 @@ export async function placeOrder(params: {
   );
 
   return { orderNo: payload.output?.ODNO ?? "", raw: payload };
+}
+
+/**
+ * Cancel whatever is still unfilled on an order.
+ *
+ * Used when a position reaches a profit rung while its buy is still working:
+ * taking profit on shares that filled while leaving an order out to buy more
+ * of the same name would be trading against the decision just made.
+ *
+ * `QTY_ALL_ORD_YN: "Y"` cancels the remaining quantity, so the filled part is
+ * untouched. A cancel that races a fill is rejected by Korea Investment rather
+ * than half-applied, which is why the caller treats a failure here as
+ * information rather than as a reason to fail the tick.
+ */
+export async function cancelOrder(params: {
+  orderNo: string;
+  ticker: string;
+  quantity: number;
+}): Promise<{ ok: boolean; detail: string }> {
+  const { account, product } = credentials();
+
+  try {
+    const payload = await call<{ output?: { ODNO?: string }; msg1?: string }>(
+      "/uapi/domestic-stock/v1/trading/order-rvsecncl",
+      TR[env()].cancel,
+      {
+        method: "POST",
+        body: {
+          CANO: account,
+          ACNT_PRDT_CD: product,
+          KRX_FWDG_ORD_ORGNO: "",
+          ORGN_ODNO: params.orderNo,
+          ORD_DVSN: "00",
+          RVSE_CNCL_DVSN_CD: "02", // 02 is cancel; 01 would be an amendment.
+          ORD_QTY: String(params.quantity),
+          ORD_UNPR: "0",
+          QTY_ALL_ORD_YN: "Y",
+          EXCG_ID_DVSN_CD: "KRX",
+        },
+      },
+    );
+    return { ok: true, detail: payload.msg1 ?? "cancelled" };
+  } catch (cause) {
+    return { ok: false, detail: cause instanceof Error ? cause.message : String(cause) };
+  }
 }
