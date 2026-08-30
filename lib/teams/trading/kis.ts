@@ -24,8 +24,8 @@ const HOSTS = {
  * posts still quoting the retired VTTC0802U.
  */
 const TR = {
-  demo: { sell: "VTTC0011U", buy: "VTTC0012U", balance: "VTTC8434R", cancel: "VTTC0013U" },
-  real: { sell: "TTTC0011U", buy: "TTTC0012U", balance: "TTTC8434R", cancel: "TTTC0013U" },
+  demo: { sell: "VTTC0011U", buy: "VTTC0012U", balance: "VTTC8434R", cancel: "VTTC0013U", fills: "VTTC8001R" },
+  real: { sell: "TTTC0011U", buy: "TTTC0012U", balance: "TTTC8434R", cancel: "TTTC0013U", fills: "TTTC8001R" },
 } as const;
 
 const PRICE_TR = "FHKST01010100";
@@ -608,4 +608,88 @@ export function aggregate(candles: Candle[], interval: number): Candle[] {
   }
 
   return [...buckets.values()];
+}
+
+export type Fill = {
+  orderNo: string;
+  ticker: string;
+  side: "buy" | "sell";
+  /** Shares actually executed. */
+  quantity: number;
+  /** Average execution price, in KRW. */
+  price: number;
+};
+
+export type DailyFills = {
+  fills: Fill[];
+  /** The response as it arrived, so the parsing can be checked against it. */
+  raw: unknown;
+};
+
+/**
+ * What actually executed today, and at what price.
+ *
+ * Fill prices are the missing half of every question worth asking about the
+ * desk. The balance says what is held and at what average cost, but once a
+ * position is flattened it is gone -- so without this the result of a session
+ * is unrecoverable an hour after it ends.
+ *
+ * One call a day, at the close. The field names below are the vendor's
+ * documented ones and have never been seen populated, because the desk has
+ * never traded; the raw payload is returned alongside so the first real session
+ * can settle it. A row that cannot be parsed is skipped rather than guessed at.
+ */
+export async function fetchDailyFills(date: string): Promise<DailyFills> {
+  const { account, product } = credentials();
+  const stamp = date.replace(/-/g, "");
+
+  const payload = await call<{ output1?: Record<string, string>[] }>(
+    "/uapi/domestic-stock/v1/trading/inquire-daily-ccld",
+    TR[env()].fills,
+    {
+      method: "GET",
+      query: {
+        CANO: account,
+        ACNT_PRDT_CD: product,
+        INQR_STRT_DT: stamp,
+        INQR_END_DT: stamp,
+        // 00 is both sides, 00 is every order state, 01 is filled only.
+        SLL_BUY_DVSN_CD: "00",
+        INQR_DVSN: "00",
+        PDNO: "",
+        CCLD_DVSN: "01",
+        ORD_GNO_BRNO: "",
+        ODNO: "",
+        INQR_DVSN_3: "00",
+        INQR_DVSN_1: "",
+        CTX_AREA_FK100: "",
+        CTX_AREA_NK100: "",
+      },
+    },
+  );
+
+  const rows = payload.output1 ?? [];
+  const fills: Fill[] = [];
+
+  for (const row of rows) {
+    const quantity = num(row.tot_ccld_qty);
+    const price = num(row.avg_prvs);
+    const ticker = row.pdno ?? "";
+    // 01 is a sale and 02 a purchase in this response, which is the opposite
+    // way round from the order endpoint's transaction ids.
+    const sideCode = row.sll_buy_dvsn_cd ?? "";
+
+    if (!ticker || quantity <= 0 || price <= 0) continue;
+    if (sideCode !== "01" && sideCode !== "02") continue;
+
+    fills.push({
+      orderNo: row.odno ?? "",
+      ticker,
+      side: sideCode === "02" ? "buy" : "sell",
+      quantity,
+      price,
+    });
+  }
+
+  return { fills, raw: rows };
 }

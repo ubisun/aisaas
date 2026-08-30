@@ -74,6 +74,8 @@ As of 2026-08-30 `trading` and `market-report` are on duty; `strategy` is stood 
 
 **Talking to the CEO.** `lib/telegram/` handles both directions. Outbound is notifications; inbound is a command registry (`commands.ts`) where `/help` is generated from the registry, so a command cannot be added undocumented. `TELEGRAM_CHAT_ID` doubles as the allowlist, and the webhook checks the secret header. `lib/approvals.ts` plus `/approvals` is the gate for anything needing a human decision.
 
+**Trading results** are captured at the close by `lib/teams/trading/performance.ts` and stored in `equity_snapshots`, one row per trading day and environment. This exists because the broker forgets a position the moment it is flattened — the balance never says what a closed trade sold for — so a session's result is recoverable for about an hour and then gone. Fill prices come from one execution-inquiry call a day, and realised profit is credited per strategy, which is only possible because a ticker belongs to exactly one strategy for the session. `/performance` reads it; returns are summed rather than compounded, because the desk flattens daily and starts again from the same fixed capital.
+
 **Model usage** goes through `lib/llm.ts`, which records every call to `llm_usage` (tokens, cache, web searches). `/cost` prices that table from the rate table in `commands.ts` — update the rates there when pricing changes.
 
 ## Next.js 16 specifics

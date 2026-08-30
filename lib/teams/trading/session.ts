@@ -3,9 +3,11 @@ import { setPhase } from "@/lib/runs";
 import { createAdminClient } from "@/lib/supabase/admin";
 
 import { previousTradeDate } from "./calendar";
+import { fetchAccountSummary } from "./kis";
 import { latestSectorOutlook, screenNow, type ScreenedCandidate } from "./candidates";
 import { maxOrderValueKrw, strategyBudgetKrw, TRADING_CONFIG } from "./config";
-import { cancelOrder, fetchAccountSummary, fetchHoldings, placeOrder, type Holding } from "./kis";
+import { cancelOrder, fetchHoldings, placeOrder, type Holding } from "./kis";
+import { captureSession } from "./performance";
 import {
   mandatoryExits,
   minutesToLastEntry,
@@ -632,14 +634,13 @@ export async function closeSession(runId: string, tradeDate: string): Promise<vo
 
   await runTick(runId, tradeDate);
 
-  const [{ data: orderRows }, { data: tickRows }, summary] = await Promise.all([
+  const [{ data: orderRows }, { data: tickRows }] = await Promise.all([
     supabase
       .from("orders")
       .select("tick_id, ticker, side, quantity, status, filled_quantity, rejected_reason, created_at")
       .eq("run_id", runId)
       .order("created_at", { ascending: true }),
     supabase.from("strategy_ticks").select("id, strategy").eq("run_id", runId),
-    fetchAccountSummary().catch(() => null),
   ]);
 
   const strategyOf = new Map((tickRows ?? []).map((t) => [t.id as string, t.strategy as string]));
@@ -649,8 +650,18 @@ export async function closeSession(runId: string, tradeDate: string): Promise<vo
   const sells = submitted.filter((o) => o.side === "sell");
   const rejected = orders.filter((o) => o.status === "rejected");
 
-  // Group the day by strategy: the reason for running more than one is to be
-  // able to tell them apart afterwards.
+  // Who owned what, so the day's profit can be credited. A ticker belongs to
+  // whoever bought it, which is what makes per-strategy profit meaningful.
+  const ownerByTicker = new Map<string, string>();
+  for (const order of buys) {
+    const owner = order.tick_id ? strategyOf.get(order.tick_id) : undefined;
+    if (owner && !ownerByTicker.has(order.ticker)) ownerByTicker.set(order.ticker, owner);
+  }
+
+  // Captured after the flatten and before anything can forget it: the broker
+  // keeps no record of what a closed position sold for.
+  const result = await captureSession(runId, tradeDate, ownerByTicker);
+
   const byStrategy = new Map<string, string[]>();
   for (const order of submitted) {
     const owner = order.tick_id ? (strategyOf.get(order.tick_id) ?? "?") : "?";
@@ -659,13 +670,19 @@ export async function closeSession(runId: string, tradeDate: string): Promise<vo
       order.side === "buy" && order.filled_quantity < order.quantity
         ? ` (체결 ${order.filled_quantity}/${order.quantity})`
         : "";
-    const line = `${arrow} ${order.ticker} × ${order.quantity}${filled}\n    ${String(order.rejected_reason ?? "").slice(0, 160)}`;
+    const line = `${arrow} ${order.ticker} × ${order.quantity}${filled}
+    ${String(order.rejected_reason ?? "").slice(0, 160)}`;
     byStrategy.set(owner, [...(byStrategy.get(owner) ?? []), line]);
   }
 
   const lines: string[] = [];
   for (const [strategy, entries] of byStrategy) {
-    lines.push(`— ${strategy} —`, ...entries);
+    const realised = result.byStrategy[strategy];
+    const pnl =
+      realised === undefined
+        ? ""
+        : ` · 실현 ${realised >= 0 ? "+" : ""}${Math.round(realised).toLocaleString()}원`;
+    lines.push(`— ${strategy}${pnl} —`, ...entries);
   }
 
   await notify({
@@ -675,8 +692,8 @@ export async function closeSession(runId: string, tradeDate: string): Promise<vo
     exits: sells.length,
     rejected: rejected.length,
     ticks: (tickRows ?? []).filter((t) => t.strategy !== RISK_GATE).length,
-    unrealisedPnl: summary?.unrealisedPnl ?? null,
-    holdingsValue: summary?.holdingsValue ?? null,
+    unrealisedPnl: result.unrealisedPnl,
+    holdingsValue: result.holdingsValue,
     lines,
   });
 }
