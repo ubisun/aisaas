@@ -3,18 +3,22 @@ import { verifySignatureAppRouter } from "@upstash/qstash/nextjs";
 import { finishRun } from "@/lib/runs";
 import { openSession } from "@/lib/teams/trading/session";
 
-// Screening is throttled at ~1.2s a quote.
-// Hobby allows up to 300s; the earlier 60 here was a mistaken limit,
-// not a platform one.
-export const maxDuration = 180;
+// A report lookup and a metadata write. Screening moved into the ticks, so
+// this no longer spends nineteen seconds on throttled quote calls.
+export const maxDuration = 60;
 
-/** Screens the day's candidates and leaves the run armed for the ticks. */
+/**
+ * Opens the day and leaves the run armed for the ticks.
+ *
+ * Picking candidates is not done here: this runs before the opening bell, when
+ * the turnover the screen reads is still zero.
+ */
 async function handle(request: Request) {
   const { runId, tradeDate } = (await request.json()) as { runId: string; tradeDate: string };
 
   try {
-    const count = await openSession(runId, tradeDate);
-    return Response.json({ tradeDate, candidates: count }, { status: 200 });
+    const report = await openSession(runId, tradeDate);
+    return Response.json({ tradeDate, ...report }, { status: 200 });
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
     await finishRun(runId, "failed", detail);

@@ -76,49 +76,115 @@ export async function latestSectorOutlook(tradeDate: string): Promise<ReportView
 
 export type ScreenedCandidate = Candidate & {
   turnoverRank: number;
-  volumeTurnoverRate: number;
   marketCapEok: number;
 };
 
 /**
- * Build the day's candidate list.
+ * Market capitalisation for a set of tickers, fetched at most once each per
+ * trading day.
  *
- * Quotes are fetched one at a time for the ranked pool because the ranking
- * response carries no market capitalisation, and the ratio is the whole point
- * of the screen.
+ * This is what makes re-screening affordable. The ranking response carries
+ * turnover but not market cap, and market cap costs a quote call per ticker at
+ * 1.2s apiece in the paper environment. Since it does not move intraday in any
+ * way a 1% threshold notices, the first screen of the day pays for it and every
+ * screen after reads the cache.
+ *
+ * A ticker whose quote fails is simply left out of the map; the screen skips it
+ * rather than failing the tick over one name.
  */
-export async function selectCandidates(): Promise<ScreenedCandidate[]> {
+async function marketCaps(
+  tickers: { ticker: string; name: string }[],
+  tradeDate: string,
+): Promise<Map<string, number>> {
+  const supabase = createAdminClient();
+  const caps = new Map<string, number>();
+
+  const { data: cached } = await supabase
+    .from("market_caps")
+    .select("ticker, market_cap_eok")
+    .eq("trade_date", tradeDate)
+    .in(
+      "ticker",
+      tickers.map((t) => t.ticker),
+    );
+
+  for (const row of cached ?? []) {
+    caps.set(row.ticker as string, Number(row.market_cap_eok));
+  }
+
+  const missing = tickers.filter((t) => !caps.has(t.ticker));
+  if (!missing.length) return caps;
+
+  const fetched: { ticker: string; trade_date: string; name: string; market_cap_eok: number }[] = [];
+
+  for (const { ticker, name } of missing) {
+    try {
+      const quote = await fetchQuote(ticker);
+      if (quote.marketCapEok <= 0) continue;
+      caps.set(ticker, quote.marketCapEok);
+      fetched.push({
+        ticker,
+        trade_date: tradeDate,
+        name,
+        market_cap_eok: quote.marketCapEok,
+      });
+    } catch (cause) {
+      console.warn(`market cap: skipping ${ticker}`, cause);
+    }
+  }
+
+  if (fetched.length) {
+    // Ignore a write failure: the caps are already in hand for this screen, and
+    // the worst case is paying for the quotes again on the next tick.
+    const { error } = await supabase
+      .from("market_caps")
+      .upsert(fetched, { onConflict: "ticker,trade_date" });
+    if (error) console.warn(`market cap: caching failed: ${error.message}`);
+  }
+
+  return caps;
+}
+
+/**
+ * The shortlist as it stands right now.
+ *
+ * Called once per tick rather than once per morning. The screen asks what is
+ * being traded heavily *this morning*, which a list computed before the opening
+ * bell cannot answer -- today's accumulated turnover is zero until the market
+ * opens, so a pre-open screen fails the liquidity filter on every name and
+ * returns nothing. That is what it did: 296 of 296 in-window decision points
+ * between 07-27 and 08-28 saw an empty shortlist and no order was ever placed.
+ *
+ * The turnover floor doubles as a time gate, which is why the entry window did
+ * not need moving: ten minutes after the open only the genuinely heavy names
+ * have cleared it, and the list fills out as the morning goes on.
+ */
+export async function screenNow(tradeDate: string): Promise<ScreenedCandidate[]> {
   const ranked = (await fetchVolumeRank()).slice(0, screening.rankPoolSize);
+  const liquid = ranked.filter((row) => row.turnover >= screening.minTurnoverKrw);
+  if (!liquid.length) return [];
+
+  const caps = await marketCaps(liquid, tradeDate);
 
   const screened: ScreenedCandidate[] = [];
-  for (const row of ranked) {
-    if (row.turnover < screening.minTurnoverKrw) continue;
-
-    let quote;
-    try {
-      quote = await fetchQuote(row.ticker);
-    } catch (cause) {
-      console.warn(`candidate screen: skipping ${row.ticker}`, cause);
-      continue;
-    }
+  for (const row of liquid) {
+    const marketCapEok = caps.get(row.ticker);
+    if (!marketCapEok) continue;
 
     // hts_avls is reported in 억원; turnover is in KRW.
-    const marketCapKrw = quote.marketCapEok * 100_000_000;
-    if (marketCapKrw <= 0) continue;
-
-    const turnoverToMarketCapPct = (quote.turnover / marketCapKrw) * 100;
+    const marketCapKrw = marketCapEok * 100_000_000;
+    const turnoverToMarketCapPct = (row.turnover / marketCapKrw) * 100;
     if (turnoverToMarketCapPct < screening.minTurnoverToMarketCapPct) continue;
 
     screened.push({
       ticker: row.ticker,
       name: row.name,
-      price: quote.price,
-      changePct: quote.changePct,
-      turnover: quote.turnover,
+      price: row.price,
+      changePct: row.changePct,
+      turnover: row.turnover,
       turnoverToMarketCapPct,
       turnoverRank: row.rank,
-      volumeTurnoverRate: quote.volumeTurnoverRate,
-      marketCapEok: quote.marketCapEok,
+      marketCapEok,
     });
   }
 
