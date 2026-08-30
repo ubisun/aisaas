@@ -530,6 +530,7 @@ export async function runTick(runId: string, tradeDate: string): Promise<TickOut
         entryBudget: TRADING_CONFIG.limits.maxEntriesPerDay,
         ordersSoFar: orders.length,
         maxOrderValueKrw: orderCap,
+        budgetKrw: budget,
       };
 
       const proposal = await registered.strategy.propose(context);

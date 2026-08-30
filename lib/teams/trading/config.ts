@@ -195,7 +195,17 @@ export const TRADING_CONFIG = {
     rewardMultiple: 2.0,
     /** Ticks below the reference low the stop is placed. */
     stopBufferTicks: 1,
-    /** Consecutive stop-outs before the strategy stands itself down. */
+    /**
+     * How much of its budget the strategy risks on one trade, in percent.
+     *
+     * This is the other half of the document's sizing rule -- quantity is the
+     * risk budget divided by the distance to the stop, so a tight stop buys
+     * more shares and a wide one buys fewer, and the loss when the stop is hit
+     * is the same either way. The desk's per-order ceiling still applies and
+     * the smaller of the two wins.
+     */
+    riskPerTradePct: 0.5,
+    /** Stop-outs before the strategy stands itself down for the day. */
     killSwitchLosses: 2,
     /** Names carried into the session. Each costs one 1.2s call per tick. */
     watchlistSize: 10,

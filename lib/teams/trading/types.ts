@@ -72,6 +72,8 @@ export type TickContext = {
   ordersSoFar: number;
   /** Notional ceiling for a single order, in KRW. */
   maxOrderValueKrw: number;
+  /** This strategy's whole share of the day's capital, in KRW. */
+  budgetKrw: number;
 };
 
 export type ProposedOrder = {

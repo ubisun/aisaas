@@ -48,6 +48,48 @@ type StateDetail = {
 
 type TickerState = { state: State; detail: StateDetail };
 
+/**
+ * How many of this strategy's positions have been stopped out today.
+ *
+ * The document calls for standing down after two consecutive stops. With two
+ * entries a day, "consecutive" and "total" are the same number -- so this
+ * counts total rather than trying to order trades that may have overlapped,
+ * which would be a distinction without a difference here and a source of bugs.
+ *
+ * Read from the orders rather than kept in the state table: the exits are
+ * written by the risk gate, which knows nothing about this strategy's state,
+ * and a counter only one side maintains drifts.
+ */
+async function stopOutsToday(runId: string): Promise<number> {
+  const supabase = createAdminClient();
+
+  const { data: ticks } = await supabase
+    .from("strategy_ticks")
+    .select("id")
+    .match({ run_id: runId, strategy: orbStrategy.name });
+
+  const { data: buys } = await supabase
+    .from("orders")
+    .select("ticker")
+    .eq("run_id", runId)
+    .eq("side", "buy")
+    .in("tick_id", (ticks ?? []).map((t) => t.id as string));
+
+  const mine = new Set((buys ?? []).map((o) => o.ticker as string));
+  if (!mine.size) return 0;
+
+  const { data: sells } = await supabase
+    .from("orders")
+    .select("ticker, rejected_reason")
+    .eq("run_id", runId)
+    .eq("side", "sell")
+    .in("status", ["submitted", "filled"]);
+
+  return (sells ?? []).filter(
+    (o) => mine.has(o.ticker as string) && String(o.rejected_reason ?? "").startsWith("Stop at"),
+  ).length;
+}
+
 async function loadStates(runId: string): Promise<Map<string, TickerState>> {
   const supabase = createAdminClient();
   const { data } = await supabase
@@ -126,16 +168,27 @@ function isBullishEngulfing(bar: Candle, previous: Candle | undefined): boolean 
   return bar.close > previous.open && previous.close < previous.open;
 }
 
-/** Whole shares, bounded by the order ceiling and by what one R is worth. */
-function sizePosition(entry: number, stop: number, budgetPerOrder: number): number {
+/**
+ * Whole shares, bounded by what one R is worth and by the order ceiling.
+ *
+ * The document sizes by risk alone: the quantity that makes a stop-out cost
+ * exactly the risk budget. The desk's per-order ceiling is a separate promise
+ * made to the rest of the system, so the smaller of the two wins -- a stop
+ * tight enough to justify a large position must not quietly buy one the gate
+ * would then reject.
+ */
+function sizePosition(
+  entry: number,
+  stop: number,
+  budgetPerOrder: number,
+  riskBudget: number,
+): number {
   const risk = entry - stop;
-  if (risk <= 0) return 0;
+  if (risk <= 0 || entry <= 0) return 0;
 
-  // The document sizes by risk alone. The desk's per-order ceiling is a
-  // separate promise and the smaller of the two has to win, or a tight stop
-  // would quietly buy a position the gate would then reject.
+  const byRisk = Math.floor(riskBudget / risk);
   const byCeiling = Math.floor(budgetPerOrder / entry);
-  return Math.max(0, byCeiling);
+  return Math.max(0, Math.min(byRisk, byCeiling));
 }
 
 function bracket(
@@ -147,7 +200,11 @@ function bracket(
 ): ProposedOrder | null {
   const entry = entryBar.close;
   const stop = stopReference - orb.stopBufferTicks;
-  const quantity = sizePosition(entry, stop, context.maxOrderValueKrw);
+  // The risk budget is a share of what this strategy was allocated, not of the
+  // whole desk -- two strategies sized against the same capital would each be
+  // risking the other's money.
+  const riskBudget = (context.budgetKrw * orb.riskPerTradePct) / 100;
+  const quantity = sizePosition(entry, stop, context.maxOrderValueKrw, riskBudget);
   if (quantity <= 0) return null;
 
   return {
@@ -250,6 +307,14 @@ export const orbStrategy: Strategy = {
     }
     if (!context.candidates.length) {
       return { orders: [], reasoning: "Nothing on the shortlist to watch." };
+    }
+
+    const stops = await stopOutsToday(context.runId);
+    if (stops >= orb.killSwitchLosses) {
+      return {
+        orders: [],
+        reasoning: `Stood down: ${stops} stop-outs today, at the ${orb.killSwitchLosses} the rules allow.`,
+      };
     }
 
     const states = await loadStates(context.runId);
