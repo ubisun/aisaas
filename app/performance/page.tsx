@@ -8,8 +8,13 @@ type Snapshot = {
   cash_krw: number | null;
   holdings_value_krw: number | null;
   total_equity_krw: number | null;
+  /** Per-strategy arithmetic: exact from fills, estimated from marks. */
   realised_pnl_krw: number | null;
   by_strategy: Record<string, number>;
+  /** The broker's own figure for the account. Exact, fees included. */
+  account_realised_krw: number | null;
+  attribution_source: string | null;
+  unattributed_krw: number | null;
   capital_krw: number | null;
 };
 
@@ -26,13 +31,19 @@ const pct = (value: number) => `${value >= 0 ? "+" : "−"}${Math.abs(value).toF
  * arithmetic for that arrangement; compounding would describe a different desk.
  */
 function summarise(rows: Snapshot[]) {
-  const realised = rows.reduce((sum, r) => sum + (r.realised_pnl_krw ?? 0), 0);
+  // The account figure, not the per-strategy sum. The two differ by fees and
+  // by whatever the estimate missed, and a return quoted from an estimate is
+  // the kind of number that gets believed later.
+  const realised = rows.reduce(
+    (sum, r) => sum + (r.account_realised_krw ?? r.realised_pnl_krw ?? 0),
+    0,
+  );
   const capital = rows[0]?.capital_krw ?? 0;
   return {
     realised,
     pct: capital > 0 ? (realised / capital) * 100 : 0,
     days: rows.length,
-    wins: rows.filter((r) => (r.realised_pnl_krw ?? 0) > 0).length,
+    wins: rows.filter((r) => (r.account_realised_krw ?? r.realised_pnl_krw ?? 0) > 0).length,
   };
 }
 
@@ -48,7 +59,7 @@ export default async function PerformancePage() {
   const { data, error } = await supabase
     .from("equity_snapshots")
     .select(
-      "trade_date, environment, cash_krw, holdings_value_krw, total_equity_krw, realised_pnl_krw, by_strategy, capital_krw",
+      "trade_date, environment, cash_krw, holdings_value_krw, total_equity_krw, realised_pnl_krw, by_strategy, account_realised_krw, attribution_source, unattributed_krw, capital_krw",
     )
     .order("trade_date", { ascending: false })
     .limit(180);
@@ -62,6 +73,10 @@ export default async function PerformancePage() {
   ];
 
   // Realised profit per strategy across everything on the page.
+  // Every row on the page attributed by estimate rather than by fills.
+  const estimatedOnly =
+    rows.length > 0 && rows.every((r) => r.attribution_source === "marks");
+
   const byStrategy = new Map<string, { realised: number; days: number }>();
   for (const row of rows) {
     for (const [strategy, amount] of Object.entries(row.by_strategy ?? {})) {
@@ -121,7 +136,16 @@ export default async function PerformancePage() {
 
           {byStrategy.size > 0 && (
             <section className="mt-10">
-              <h2 className="text-sm font-semibold text-black dark:text-zinc-50">전략별</h2>
+              <h2 className="text-sm font-semibold text-black dark:text-zinc-50">
+                전략별{estimatedOnly ? " (추정)" : ""}
+              </h2>
+              {estimatedOnly && (
+                <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+                  모의투자는 체결 내역을 제공하지 않아, 청산 직전 평가손익으로 추정한
+                  값입니다. 두 전략이 같은 방식으로 측정되므로 비교에는 쓸 수 있지만
+                  수익률로 인용할 수는 없습니다 — 위의 기간 수익률은 계좌 실측입니다.
+                </p>
+              )}
               <div className="mt-3 overflow-x-auto rounded-lg border border-zinc-200 dark:border-zinc-800">
                 <table className="w-full min-w-[28rem] text-sm">
                   <thead className="bg-zinc-50 text-xs uppercase tracking-wide text-zinc-500 dark:bg-zinc-900 dark:text-zinc-400">
@@ -177,7 +201,7 @@ export default async function PerformancePage() {
                 </thead>
                 <tbody>
                   {rows.map((row) => {
-                    const realised = row.realised_pnl_krw ?? 0;
+                    const realised = row.account_realised_krw ?? row.realised_pnl_krw ?? 0;
                     const capital = row.capital_krw ?? 0;
                     return (
                       <tr

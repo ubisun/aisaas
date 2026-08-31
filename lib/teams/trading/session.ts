@@ -7,7 +7,7 @@ import { fetchAccountSummary } from "./kis";
 import { latestSectorOutlook, screenNow, type ScreenedCandidate } from "./candidates";
 import { maxOrderValueKrw, strategyBudgetKrw, TRADING_CONFIG } from "./config";
 import { cancelOrder, fetchHoldings, placeOrder, type Holding } from "./kis";
-import { captureSession } from "./performance";
+import { captureSession, markPositions } from "./performance";
 import {
   mandatoryExits,
   minutesToLastEntry,
@@ -463,6 +463,11 @@ export async function runTick(runId: string, tradeDate: string): Promise<TickOut
   const owners = ownerMap(orders, tickStrategy);
   const positions = buildPositions(holdings, orders);
 
+  // Recorded before anything is sold. On the paper account this mark is the
+  // only trace a position leaves: the broker forgets the price on the way out
+  // and the execution inquiry comes back empty.
+  await markPositions(runId, positions);
+
   // --- Exits: account-level, generated rather than proposed. ---
   const exits = mandatoryExits(positions);
   await cancelWorkingBuys(exits, orders);
@@ -678,14 +683,31 @@ export async function closeSession(runId: string, tradeDate: string): Promise<vo
     byStrategy.set(owner, [...(byStrategy.get(owner) ?? []), line]);
   }
 
+  const estimated = result.source === "marks";
   const lines: string[] = [];
+
+  if (result.accountRealised !== null) {
+    const sign = result.accountRealised >= 0 ? "+" : "";
+    lines.push(
+      `계좌 실현손익 ${sign}${Math.round(result.accountRealised).toLocaleString()}원`,
+      "",
+    );
+  }
+
   for (const [strategy, entries] of byStrategy) {
     const realised = result.byStrategy[strategy];
     const pnl =
       realised === undefined
         ? ""
-        : ` · 실현 ${realised >= 0 ? "+" : ""}${Math.round(realised).toLocaleString()}원`;
+        : ` · ${estimated ? "추정" : "실현"} ${realised >= 0 ? "+" : ""}${Math.round(realised).toLocaleString()}원`;
     lines.push(`— ${strategy}${pnl} —`, ...entries);
+  }
+
+  if (estimated) {
+    lines.push(
+      "",
+      "<i>전략별 금액은 청산 직전 평가손익 기준 추정입니다 — 모의투자는 체결 내역을 제공하지 않습니다. 계좌 실현손익이 실측입니다.</i>",
+    );
   }
 
   await notify({
