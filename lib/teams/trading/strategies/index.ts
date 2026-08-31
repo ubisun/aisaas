@@ -40,15 +40,19 @@ export const REGISTRY: RegisteredStrategy[] = [
    * Losing a ticker costs it the trade; losing one costs the other a choice.
    */
   //
-  // Both shadow as of 2026-08-30. The multi-strategy dispatch, the ticker
-  // claim and the opening-range state machine have all type-checked and none
-  // of them has ever run. A shadow session exercises every one of those paths
-  // and records what each strategy would have done, without an order being the
-  // thing that discovers the bug.
+  // Both live as of 2026-08-31, after a shadow session read correctly: 240
+  // judgements across 25 ticks exercised the breakout, the trend filter, the
+  // momentum test, the retest zone and the confirmation bar; 25 candidates
+  // accumulated where every previous session had none; and agent-v1 ran 25
+  // times without failing and declined to buy, which is the prompt working
+  // rather than the strategy failing.
   //
-  // Promote by flipping `live` once a session's tick records read correctly.
-  { strategy: orbStrategy, priority: 110, live: false },
-  { strategy: agentStrategy, priority: 100, live: false },
+  // Still unexercised, and only reachable by trading: order submission, the
+  // ticker claim, cancelOrder against a working order, and fill tracking. The
+  // account is the paper one, so the cost of finding a bug in those is a bad
+  // record rather than money.
+  { strategy: orbStrategy, priority: 110, live: true },
+  { strategy: agentStrategy, priority: 100, live: true },
 ];
 
 /** Live strategies, highest priority first. */
