@@ -145,7 +145,7 @@ const RATES: Record<string, { input: number; output: number }> = {
 /** Billed per search, separately from tokens. */
 const WEB_SEARCH_USD = 0.01;
 
-type UsageRow = {
+export type UsageRow = {
   team: string;
   purpose: string;
   model: string;
@@ -156,7 +156,7 @@ type UsageRow = {
   web_searches: number;
 };
 
-function costOf(row: UsageRow): number {
+export function costOf(row: UsageRow): number {
   const rate = RATES[row.model] ?? { input: 5, output: 25 };
   const perToken = (tokens: number, usdPerMillion: number) => (tokens / 1_000_000) * usdPerMillion;
 

@@ -341,6 +341,20 @@ export type AccountSummary = {
   unrealisedPnl: number;
   /** Deposit balance, in KRW. */
   cash: number;
+  /**
+   * What the account is worth today against yesterday, in KRW.
+   *
+   * The broker's own figure, and the only exact statement of a session's result
+   * available on the paper account -- fees and taxes included, and it needs no
+   * fills to compute. Verified against a round trip on 2026-08-31:
+   * 257,000 sold - 256,750 bought - 573 charged = -323, which is what this
+   * field said.
+   */
+  dayChange: number;
+  /** Today's buys, sells and charges, in KRW. The parts of `dayChange`. */
+  boughtToday: number;
+  soldToday: number;
+  chargesToday: number;
 };
 
 /** The account-level totals KIS returns alongside the holdings list. */
@@ -373,6 +387,10 @@ export async function fetchAccountSummary(): Promise<AccountSummary> {
     holdingsValue: num(summary.scts_evlu_amt),
     unrealisedPnl: num(summary.evlu_pfls_smtl_amt),
     cash: num(summary.dnca_tot_amt),
+    dayChange: num(summary.asst_icdc_amt),
+    boughtToday: num(summary.thdt_buy_amt),
+    soldToday: num(summary.thdt_sll_amt),
+    chargesToday: num(summary.thdt_tlex_amt),
   };
 }
 
@@ -430,9 +448,13 @@ export async function cancelOrder(params: {
   ticker: string;
   quantity: number;
 }): Promise<{ ok: boolean; detail: string }> {
-  const { account, product } = credentials();
-
   try {
+    // Inside the try with everything else: this function's contract is that it
+    // reports a failure rather than raising one, and the caller only logs what
+    // it returns. A credentials failure escaping would take down a tick that
+    // was otherwise fine.
+    const { account, product } = credentials();
+
     const payload = await call<{ output?: { ODNO?: string }; msg1?: string }>(
       "/uapi/domestic-stock/v1/trading/order-rvsecncl",
       TR[env()].cancel,

@@ -2,6 +2,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 
 import { TRADING_CONFIG } from "./config";
 import { fetchAccountSummary, fetchDailyFills, type Fill } from "./kis";
+import type { Position } from "./types";
 
 /**
  * What the session was worth, written down before it can be lost.
@@ -113,9 +114,80 @@ export function realisedByStrategy(
   return { total, byStrategy };
 }
 
+/**
+ * Remember what each held position is worth right now.
+ *
+ * Called every tick. On the paper account this is the only trace a position
+ * leaves behind: once it is sold the broker forgets the price, and the
+ * execution inquiry that would have said so comes back empty.
+ */
+export async function markPositions(runId: string, positions: Position[]): Promise<void> {
+  if (!positions.length) return;
+
+  const supabase = createAdminClient();
+  const { error } = await supabase.from("position_marks").upsert(
+    positions.map((p) => ({
+      run_id: runId,
+      ticker: p.ticker,
+      quantity: p.quantity,
+      average_price: p.averagePrice,
+      current_price: p.currentPrice,
+      pnl_krw: (p.currentPrice - p.averagePrice) * p.quantity,
+      observed_at: new Date().toISOString(),
+    })),
+    { onConflict: "run_id,ticker" },
+  );
+
+  if (error) console.warn(`marking positions failed: ${error.message}`);
+}
+
+/**
+ * Per-strategy profit estimated from the last mark of each position.
+ *
+ * Used only when the execution inquiry gives nothing, which on the paper
+ * account is always. It is an estimate and is labelled as one wherever it is
+ * stored: it misses the slippage between the last tick and the fill, and it
+ * misses fees entirely. Both surface as the residual against the broker's own
+ * figure for the account, so the size of the error is visible every day rather
+ * than assumed to be small.
+ *
+ * Good enough for the job it has -- deciding which of two strategies did
+ * better, when both are measured the same way. Not good enough to quote as a
+ * return, which is why the account figure is stored separately.
+ */
+async function estimateFromMarks(
+  runId: string,
+  ownerByTicker: Map<string, string>,
+): Promise<{ total: number; byStrategy: Record<string, number> }> {
+  const supabase = createAdminClient();
+  const { data } = await supabase
+    .from("position_marks")
+    .select("ticker, pnl_krw")
+    .eq("run_id", runId);
+
+  const byStrategy: Record<string, number> = {};
+  let total = 0;
+
+  for (const mark of data ?? []) {
+    const pnl = Number(mark.pnl_krw);
+    const owner = ownerByTicker.get(mark.ticker as string) ?? "unattributed";
+    byStrategy[owner] = (byStrategy[owner] ?? 0) + pnl;
+    total += pnl;
+  }
+
+  return { total, byStrategy };
+}
+
 export type SessionResult = {
+  /** Per-strategy arithmetic. Exact from fills, estimated from marks. */
   realised: number;
   byStrategy: Record<string, number>;
+  /** Where the attribution came from, so a reader knows what it is worth. */
+  source: "fills" | "marks" | "none";
+  /** The broker's own figure for the account. Exact, fees included. */
+  accountRealised: number | null;
+  /** What the per-strategy numbers do not account for. */
+  unattributed: number | null;
   cash: number | null;
   holdingsValue: number | null;
   unrealisedPnl: number | null;
@@ -145,6 +217,13 @@ export async function captureSession(
     }),
   ]);
 
+  // The exact path first. It is expected to work on a live account and to come
+  // back empty on the paper one, so which branch runs is recorded rather than
+  // assumed -- promoting to a live account should silently make this better,
+  // and the stored source is how anyone would notice that it had.
+  let source: "fills" | "marks" | "none" = "none";
+  let attribution = { total: 0, byStrategy: {} as Record<string, number> };
+
   if (daily.fills.length) {
     const { data: orderRows } = await supabase
       .from("orders")
@@ -153,13 +232,19 @@ export async function captureSession(
       .in("status", ["submitted", "filled"]);
 
     await applyFills((orderRows ?? []) as OrderRow[], daily.fills);
+    attribution = realisedByStrategy(daily.fills, ownerByTicker);
+    source = "fills";
+  } else {
+    attribution = await estimateFromMarks(runId, ownerByTicker);
+    if (Object.keys(attribution.byStrategy).length) source = "marks";
   }
-
-  const { total, byStrategy } = realisedByStrategy(daily.fills, ownerByTicker);
 
   const cash = summary?.cash ?? null;
   const holdingsValue = summary?.holdingsValue ?? null;
   const totalEquity = cash !== null && holdingsValue !== null ? cash + holdingsValue : null;
+  const accountRealised = summary?.dayChange ?? null;
+  const unattributed =
+    accountRealised === null ? null : accountRealised - attribution.total;
 
   const { error } = await supabase.from("equity_snapshots").upsert(
     {
@@ -169,8 +254,14 @@ export async function captureSession(
       holdings_value_krw: holdingsValue,
       total_equity_krw: totalEquity,
       unrealised_pnl_krw: summary?.unrealisedPnl ?? null,
-      realised_pnl_krw: total,
-      by_strategy: byStrategy,
+      realised_pnl_krw: attribution.total,
+      by_strategy: attribution.byStrategy,
+      account_realised_krw: accountRealised,
+      bought_krw: summary?.boughtToday ?? null,
+      sold_krw: summary?.soldToday ?? null,
+      charges_krw: summary?.chargesToday ?? null,
+      attribution_source: source,
+      unattributed_krw: unattributed,
       capital_krw: TRADING_CONFIG.capitalKrw,
       fills_raw: daily.raw ?? null,
       captured_at: new Date().toISOString(),
@@ -181,8 +272,11 @@ export async function captureSession(
   if (error) console.warn(`equity snapshot failed: ${error.message}`);
 
   return {
-    realised: total,
-    byStrategy,
+    realised: attribution.total,
+    byStrategy: attribution.byStrategy,
+    source,
+    accountRealised,
+    unattributed,
     cash,
     holdingsValue,
     unrealisedPnl: summary?.unrealisedPnl ?? null,
