@@ -2,6 +2,7 @@ import { notify } from "@/lib/notify";
 import { setPhase } from "@/lib/runs";
 import { createAdminClient } from "@/lib/supabase/admin";
 
+import { renderStrategyReports, summariseVerdict, type StrategyReport } from "./briefing";
 import { previousTradeDate } from "./calendar";
 import { fetchAccountSummary } from "./kis";
 import { latestSectorOutlook, screenNow, type ScreenedCandidate } from "./candidates";
@@ -41,6 +42,9 @@ import type {
  */
 
 const RISK_GATE = "risk-gate";
+
+const won = (value: number) =>
+  `${value >= 0 ? "+" : "−"}${Math.abs(Math.round(value)).toLocaleString("ko-KR")}원`;
 
 /**
  * Open the day.
@@ -648,29 +652,32 @@ export async function closeSession(runId: string, tradeDate: string): Promise<vo
       .select("tick_id, ticker, side, quantity, status, filled_quantity, rejected_reason, created_at")
       .eq("run_id", runId)
       .order("created_at", { ascending: true }),
-    supabase.from("strategy_ticks").select("id, strategy").eq("run_id", runId),
+    supabase
+      .from("strategy_ticks")
+      .select("id, strategy, reasoning, observed_at")
+      .eq("run_id", runId)
+      .order("observed_at", { ascending: true }),
   ]);
 
-  const strategyOf = new Map((tickRows ?? []).map((t) => [t.id as string, t.strategy as string]));
+  const ticks = tickRows ?? [];
+  const strategyOf = new Map(ticks.map((t) => [t.id as string, t.strategy as string]));
   const orders = orderRows ?? [];
   const submitted = orders.filter((o) => o.status === "submitted" || o.status === "filled");
   const buys = submitted.filter((o) => o.side === "buy");
   const sells = submitted.filter((o) => o.side === "sell");
   const rejected = orders.filter((o) => o.status === "rejected");
 
-  // Who owned what, so the day's profit can be credited. A ticker belongs to
-  // whoever bought it, which is what makes per-strategy profit meaningful.
+  // Who owned what, so the day's profit can be credited.
   const ownerByTicker = new Map<string, string>();
   for (const order of buys) {
     const owner = order.tick_id ? strategyOf.get(order.tick_id) : undefined;
     if (owner && !ownerByTicker.has(order.ticker)) ownerByTicker.set(order.ticker, owner);
   }
 
-  // Captured after the flatten and before anything can forget it: the broker
-  // keeps no record of what a closed position sold for.
+  // Captured after the flatten and before anything can forget it.
   const result = await captureSession(runId, tradeDate, ownerByTicker);
 
-  const byStrategy = new Map<string, string[]>();
+  const ordersByStrategy = new Map<string, string[]>();
   for (const order of submitted) {
     const owner = order.tick_id ? (strategyOf.get(order.tick_id) ?? "?") : "?";
     const arrow = order.side === "buy" ? "🟢 매수" : "🔴 매도";
@@ -680,27 +687,42 @@ export async function closeSession(runId: string, tradeDate: string): Promise<vo
         : "";
     const line = `${arrow} ${order.ticker} × ${order.quantity}${filled}
     ${String(order.rejected_reason ?? "").slice(0, 160)}`;
-    byStrategy.set(owner, [...(byStrategy.get(owner) ?? []), line]);
+    ordersByStrategy.set(owner, [...(ordersByStrategy.get(owner) ?? []), line]);
   }
+
+  // Every registered strategy gets a report, traded or not. A strategy that
+  // sat out is a decision the desk made and the CEO should see it; leaving it
+  // out is what made a working strategy look like a dead one.
+  const reports: StrategyReport[] = activeStrategies().map((registered) => {
+    const name = registered.strategy.name;
+    const mine = ticks.filter((t) => t.strategy === name);
+    const last = mine[mine.length - 1];
+
+    return {
+      name,
+      live: registered.live,
+      ticks: mine.length,
+      realised: result.byStrategy[name] ?? null,
+      orders: ordersByStrategy.get(name) ?? [],
+      verdict: last ? summariseVerdict(String(last.reasoning ?? "")) : null,
+    };
+  });
+
+  // Anything the gate did on its own -- the stops and the flatten -- belongs to
+  // no strategy and would otherwise be dropped from the report entirely.
+  const gateOrders = ordersByStrategy.get(RISK_GATE) ?? [];
 
   const estimated = result.source === "marks";
   const lines: string[] = [];
 
   if (result.accountRealised !== null) {
-    const sign = result.accountRealised >= 0 ? "+" : "";
-    lines.push(
-      `계좌 실현손익 ${sign}${Math.round(result.accountRealised).toLocaleString()}원`,
-      "",
-    );
+    lines.push(`계좌 실현손익 ${won(result.accountRealised)}`, "");
   }
 
-  for (const [strategy, entries] of byStrategy) {
-    const realised = result.byStrategy[strategy];
-    const pnl =
-      realised === undefined
-        ? ""
-        : ` · ${estimated ? "추정" : "실현"} ${realised >= 0 ? "+" : ""}${Math.round(realised).toLocaleString()}원`;
-    lines.push(`— ${strategy}${pnl} —`, ...entries);
+  lines.push(...renderStrategyReports(reports, estimated));
+
+  if (gateOrders.length) {
+    lines.push("— 리스크 게이트 —", ...gateOrders);
   }
 
   if (estimated) {
@@ -716,7 +738,7 @@ export async function closeSession(runId: string, tradeDate: string): Promise<vo
     entries: buys.length,
     exits: sells.length,
     rejected: rejected.length,
-    ticks: (tickRows ?? []).filter((t) => t.strategy !== RISK_GATE).length,
+    ticks: ticks.filter((t) => t.strategy !== RISK_GATE).length,
     unrealisedPnl: result.unrealisedPnl,
     holdingsValue: result.holdingsValue,
     lines,
