@@ -61,12 +61,14 @@ Not everything is a schedule. `workers/position-watch` is a **chain**: while the
 |---|---|---|
 | `market-close` | `0 22 * * 1-5` | 07:00 |
 | `trading` | `40 23 * * 0-4` | 08:40 |
-| `trading-tick` | `10-59/5 0 * * 1-5` and `0-15/5 1 * * 1-5` | 09:10–10:15, every 5 min |
-| `trading-close` | `30 1 * * 1-5` | 10:30 |
+| `trading-tick` | `10-59/5 0`, `*/5 1-5`, `0-10/5 6` (all `* * 1-5`) | 09:10–15:10, every 5 min |
+| `trading-close` | `15 6 * * 1-5` | 15:15 |
 | `strategy-meeting` | `0 0,4 * * *` | 09:00, 13:00 |
 | `strategy-report` | `0 8 * * *` | 17:00 |
 
-`TRADING_CONFIG.tickIntervalMinutes` is documentation only — nothing reads it. Changing the tick cadence means changing the two `trading-tick` crons.
+`TRADING_CONFIG.tickIntervalMinutes` is documentation only — nothing reads it. Changing the tick cadence means changing the three `trading-tick` crons.
+
+The close is 15:15, not 15:30: KRX runs a closing auction from 15:20, so an order sent at the bell does not trade and the position would carry overnight.
 
 **Runs.** Every team writes to the shared `runs` table via `lib/runs.ts` (team, kind, key, status, phase). This is what `/status` reads, and it is how a multi-worker pipeline keeps one identity end to end.
 
