@@ -33,11 +33,18 @@ const { watch } = TRADING_CONFIG;
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
- * Tickers sold recently enough that selling again would be a mistake.
+ * Tickers sold so recently that the balance has probably not caught up.
  *
- * The tick and the watcher both generate exits from the same positions, and a
- * fill takes a moment to leave the balance. Without this, whichever ran second
- * would see the position still held and sell it a second time.
+ * Narrow on purpose. `sellableQuantity` is what actually stops an oversell --
+ * Korea Investment excludes shares already working in an order -- and this only
+ * covers the seconds before that figure updates.
+ *
+ * Suppression is the expensive kind of safety: it leaves no record and it
+ * blocks the whole ticker, so a profit ladder clearing its second rung inside
+ * the window would miss it silently. A duplicate that gets through is refused
+ * by the broker, recorded with a reason, and retried on the next poll. The
+ * window is therefore kept to about one poll rather than to a comfortable
+ * margin.
  */
 export function recentlyExited(
   orders: { ticker: string; side: string; status: string; created_at?: string }[],
@@ -139,9 +146,18 @@ export async function watchPositions(
     await markPositions(runId, positions);
 
     const cooling = recentlyExited(orders);
-    const due: ProposedOrder[] = mandatoryExits(positions).filter(
-      (order) => !cooling.has(order.ticker),
-    );
+    const generated = mandatoryExits(positions);
+    const due: ProposedOrder[] = generated.filter((order) => !cooling.has(order.ticker));
+
+    for (const order of generated) {
+      if (cooling.has(order.ticker)) {
+        // Logged rather than dropped in silence: a suppression that keeps
+        // happening is the signal that this window is too wide.
+        console.warn(
+          `watcher: holding back ${order.side} ${order.ticker} — sold within the last ${watch.exitCooldownSeconds}s (${order.reason})`,
+        );
+      }
+    }
 
     if (due.length) {
       const { data: tick, error } = await supabase

@@ -479,7 +479,16 @@ export async function runTick(runId: string, tradeDate: string): Promise<TickOut
   // A name the watcher has just sold is left alone: the fill takes a moment to
   // leave the balance, and without this the tick would sell it a second time.
   const cooling = recentlyExited(orders);
-  const exits = mandatoryExits(positions).filter((order) => !cooling.has(order.ticker));
+  const generated = mandatoryExits(positions);
+  const exits = generated.filter((order) => !cooling.has(order.ticker));
+
+  for (const order of generated) {
+    if (cooling.has(order.ticker)) {
+      console.warn(
+        `tick: holding back ${order.side} ${order.ticker} — sold moments ago (${order.reason})`,
+      );
+    }
+  }
   await cancelWorkingBuys(exits, orders);
 
   let submitted = 0;
