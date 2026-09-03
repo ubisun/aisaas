@@ -178,6 +178,66 @@ async function estimateFromMarks(
   return { total, byStrategy };
 }
 
+/** One position's story, as it will be read months later. */
+export type PositionDetail = {
+  ticker: string;
+  name: string;
+  strategy: string;
+  quantity: number;
+  /** What it was bought at, per share. */
+  entryPrice: number;
+  /** The last price seen before it was closed. */
+  exitPrice: number;
+  costKrw: number;
+  pnlKrw: number;
+  pnlPct: number;
+};
+
+/**
+ * Assemble the day's positions from the marks, with an owner on each.
+ *
+ * Done here, once, rather than joined together at read time. Three tables have
+ * to meet for this -- the mark, the order that opened it, and the tick that
+ * says whose order it was -- and all three keep moving. Written down at the
+ * close, a session's detail stays what it was on the day.
+ */
+async function positionDetail(
+  runId: string,
+  ownerByTicker: Map<string, string>,
+): Promise<PositionDetail[]> {
+  const supabase = createAdminClient();
+
+  const [{ data: marks }, { data: names }] = await Promise.all([
+    supabase
+      .from("position_marks")
+      .select("ticker, quantity, average_price, current_price, pnl_krw")
+      .eq("run_id", runId),
+    supabase.from("trade_candidates").select("ticker, name").eq("run_id", runId),
+  ]);
+
+  const nameOf = new Map((names ?? []).map((c) => [c.ticker as string, c.name as string]));
+
+  return (marks ?? []).map((mark) => {
+    const quantity = Number(mark.quantity);
+    const entryPrice = Number(mark.average_price);
+    const exitPrice = Number(mark.current_price);
+    const costKrw = entryPrice * quantity;
+    const pnlKrw = Number(mark.pnl_krw);
+
+    return {
+      ticker: mark.ticker as string,
+      name: nameOf.get(mark.ticker as string) ?? (mark.ticker as string),
+      strategy: ownerByTicker.get(mark.ticker as string) ?? "unattributed",
+      quantity,
+      entryPrice,
+      exitPrice,
+      costKrw,
+      pnlKrw,
+      pnlPct: costKrw > 0 ? (pnlKrw / costKrw) * 100 : 0,
+    };
+  });
+}
+
 export type SessionResult = {
   /** Per-strategy arithmetic. Exact from fills, estimated from marks. */
   realised: number;
@@ -239,6 +299,8 @@ export async function captureSession(
     if (Object.keys(attribution.byStrategy).length) source = "marks";
   }
 
+  const positions = await positionDetail(runId, ownerByTicker);
+
   const cash = summary?.cash ?? null;
   const holdingsValue = summary?.holdingsValue ?? null;
   const totalEquity = cash !== null && holdingsValue !== null ? cash + holdingsValue : null;
@@ -262,6 +324,7 @@ export async function captureSession(
       charges_krw: summary?.chargesToday ?? null,
       attribution_source: source,
       unattributed_krw: unattributed,
+      positions,
       capital_krw: TRADING_CONFIG.capitalKrw,
       fills_raw: daily.raw ?? null,
       captured_at: new Date().toISOString(),

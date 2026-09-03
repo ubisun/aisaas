@@ -58,9 +58,9 @@ function escapeHtml(value: string): string {
   return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
-function reportsUrl(): string {
+function appUrl(path: string): string {
   const base = process.env.NEXT_PUBLIC_APP_URL ?? "";
-  return `${base.replace(/\/$/, "")}/reports`;
+  return `${base.replace(/\/$/, "")}${path}`;
 }
 
 export function render(event: AppEvent): RenderedEvent {
@@ -71,7 +71,7 @@ export function render(event: AppEvent): RenderedEvent {
           `<b>📈 Market report ready</b>\n` +
           `US session <b>${escapeHtml(event.sessionDate)}</b>\n` +
           `${event.sectorCount} KRX sectors · ${(event.durationMs / 1000).toFixed(0)}s\n\n` +
-          `<a href="${escapeHtml(reportsUrl())}">Open the report</a>`,
+          `<a href="${escapeHtml(appUrl("/reports"))}">Open the report</a>`,
       };
 
     case "market-report.skipped":
@@ -106,6 +106,9 @@ export function render(event: AppEvent): RenderedEvent {
           `진입 ${event.entries}회 · 청산 ${event.exits}회 · 거부 ${event.rejected}건 · 판단 ${event.ticks}회\n` +
           `평가손익 ${escapeHtml(pnl)}\n\n` +
           `${body}\n\n` +
+          // The link is the point of this message on a phone: the briefing
+          // says what happened, the page says what it was made of.
+          `<a href="${escapeHtml(appUrl("/performance"))}">종목별 상세 보기</a>\n\n` +
           `<i>모의투자 · 체결은 실제보다 낙관적입니다</i>`,
       };
     }

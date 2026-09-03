@@ -92,6 +92,22 @@ describe("event rendering", () => {
     expect(html).toContain("계좌 조회 실패");
   });
 
+  it("carries a link to the detail, because the briefing is read on a phone", () => {
+    const { html } = render({
+      type: "trading.session-closed",
+      tradeDate: "2026-09-04",
+      entries: 1,
+      exits: 1,
+      rejected: 0,
+      ticks: 10,
+      unrealisedPnl: 0,
+      holdingsValue: 0,
+      lines: [],
+    });
+    expect(html).toContain("/performance");
+    expect(html).toContain("종목별 상세");
+  });
+
   it("does not pretend a session with no fills was a session with fills", () => {
     const { html } = render({
       type: "trading.session-closed",
