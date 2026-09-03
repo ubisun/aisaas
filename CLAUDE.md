@@ -53,18 +53,22 @@ Work is split into teams under `lib/teams/`, all sharing the same infrastructure
 
 **Jobs and workers.** Per the queueing rule in `AGENTS.md`, `app/api/jobs/*` is the scheduled entry point: it enqueues to QStash and returns. `app/api/workers/*` does the work. A job that would exceed the function ceiling is split across several workers chained through the queue — the market report does generation and translation as two workers, and the strategy team has four. `app/api/jobs/failure` is QStash's failure callback, so a run killed mid-flight still reports itself.
 
+Not everything is a schedule. `workers/position-watch` is a **chain**: while the desk holds anything it polls the balance every 15s and acts on the exits, then queues its own successor. QStash crons are minute-grained at best, and a stop checked every five minutes is not a stop — a position read −1.55% at 09:16 and −5.21% at 09:20 on 2026-09-03. The chain ends when the desk is flat, when the session closes, or at a generation cap, so a bug cannot leave a function re-queueing itself forever.
+
 **Schedules live in QStash, not in this repo.** Nothing here creates or verifies them, so this table is a transcription — if it disagrees with the Upstash console, the console wins. Crons are UTC.
 
 | Job | Cron | KST |
 |---|---|---|
 | `market-close` | `0 22 * * 1-5` | 07:00 |
 | `trading` | `40 23 * * 0-4` | 08:40 |
-| `trading-tick` | `10-59/5 0 * * 1-5` and `0-15/5 1 * * 1-5` | 09:10–10:15, every 5 min |
-| `trading-close` | `30 1 * * 1-5` | 10:30 |
+| `trading-tick` | `10-59/5 0`, `*/5 1-5`, `0-10/5 6` (all `* * 1-5`) | 09:10–15:10, every 5 min |
+| `trading-close` | `15 6 * * 1-5` | 15:15 |
 | `strategy-meeting` | `0 0,4 * * *` | 09:00, 13:00 |
 | `strategy-report` | `0 8 * * *` | 17:00 |
 
-`TRADING_CONFIG.tickIntervalMinutes` is documentation only — nothing reads it. Changing the tick cadence means changing the two `trading-tick` crons.
+`TRADING_CONFIG.tickIntervalMinutes` is documentation only — nothing reads it. Changing the tick cadence means changing the three `trading-tick` crons.
+
+The close is 15:15, not 15:30: KRX runs a closing auction from 15:20, so an order sent at the bell does not trade and the position would carry overnight.
 
 **Runs.** Every team writes to the shared `runs` table via `lib/runs.ts` (team, kind, key, status, phase). This is what `/status` reads, and it is how a multi-worker pipeline keeps one identity end to end.
 
