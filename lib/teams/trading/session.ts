@@ -11,7 +11,6 @@ import { maxOrderValueKrw, strategyBudgetKrw, TRADING_CONFIG } from "./config";
 import { cancelOrder, fetchHoldings, placeOrder, type Holding } from "./kis";
 import { captureSession, markPositions } from "./performance";
 import {
-  mandatoryExits,
   minutesToLastEntry,
   screenEntries,
   screenExits,
@@ -19,7 +18,7 @@ import {
   windowState,
 } from "./risk";
 import { activeStrategies, liveStrategies, REGISTRY } from "./strategies";
-import { recentlyExited, watcherIsAlive } from "./watch";
+import { exitsDueNow, watcherIsAlive } from "./watch";
 import type {
   Candidate,
   Position,
@@ -478,16 +477,11 @@ export async function runTick(runId: string, tradeDate: string): Promise<TickOut
   // --- Exits: account-level, generated rather than proposed. ---
   // A name the watcher has just sold is left alone: the fill takes a moment to
   // leave the balance, and without this the tick would sell it a second time.
-  const cooling = recentlyExited(orders);
-  const generated = mandatoryExits(positions);
-  const exits = generated.filter((order) => !cooling.has(order.ticker));
-
-  for (const order of generated) {
-    if (cooling.has(order.ticker)) {
-      console.warn(
-        `tick: holding back ${order.side} ${order.ticker} — sold moments ago (${order.reason})`,
-      );
-    }
+  const { due: exits, heldBack } = exitsDueNow(positions, orders);
+  for (const held of heldBack) {
+    console.warn(
+      `tick: holding back ${held.order.side} ${held.order.ticker} — sold ${held.soldSecondsAgo}s ago (${held.order.reason})`,
+    );
   }
   await cancelWorkingBuys(exits, orders);
 
