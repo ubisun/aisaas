@@ -165,6 +165,48 @@ export const TRADING_CONFIG = {
   },
 
   /**
+   * Watching a position between ticks.
+   *
+   * The five-minute tick is how the desk decides what to buy; it is far too
+   * coarse for deciding when to sell. On 2026-09-03 a position read -1.55% at
+   * 09:16 and -5.21% at 09:20 -- it crossed the -2% stop somewhere in those
+   * four minutes and nothing was watching. The stop is a promise, and a promise
+   * checked every five minutes is not one.
+   *
+   * So while anything is held, a worker polls the balance on this interval and
+   * acts on the exits itself. One balance call returns every position's price,
+   * which is why the interval can be this short without straining the 1.2s gap
+   * the paper environment enforces.
+   */
+  watch: {
+    /** Seconds between polls. */
+    intervalSeconds: 15,
+    /**
+     * How long one invocation runs before handing to the next.
+     *
+     * Under the 300s function ceiling with room for a poll to finish and the
+     * hand-off to be queued.
+     */
+    invocationSeconds: 240,
+    /**
+     * Hard ceiling on the chain. At four minutes each this covers a full
+     * session several times over, and it means a bug cannot leave a function
+     * re-queueing itself forever.
+     */
+    maxGenerations: 100,
+    /** A watcher quieter than this is presumed dead and may be replaced. */
+    staleHeartbeatSeconds: 90,
+    /**
+     * A ticker sold within this window is left alone.
+     *
+     * The tick and the watcher both generate exits, and a fill takes a moment
+     * to reach the balance -- without this, whichever ran second would see the
+     * position still held and sell it again.
+     */
+    exitCooldownSeconds: 60,
+  },
+
+  /**
    * The opening-range strategy's own numbers.
    *
    * Taken from the source specification rather than invented, so that what the

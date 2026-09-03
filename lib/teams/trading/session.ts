@@ -1,4 +1,5 @@
 import { notify } from "@/lib/notify";
+import { enqueue } from "@/lib/queue";
 import { setPhase } from "@/lib/runs";
 import { createAdminClient } from "@/lib/supabase/admin";
 
@@ -18,6 +19,7 @@ import {
   windowState,
 } from "./risk";
 import { activeStrategies, liveStrategies, REGISTRY } from "./strategies";
+import { recentlyExited, watcherIsAlive } from "./watch";
 import type {
   Candidate,
   Position,
@@ -171,6 +173,7 @@ export type OrderRow = {
   kis_order_no: string | null;
   stop_loss: number | null;
   take_profit: number | null;
+  created_at?: string;
 };
 
 /**
@@ -330,7 +333,7 @@ async function recordTick(
 }
 
 /** Submit the allowed verdicts and record every one of them. */
-async function submitVerdicts(
+export async function submitVerdicts(
   runId: string,
   tickId: string,
   verdicts: Verdict[],
@@ -452,7 +455,7 @@ export async function runTick(runId: string, tradeDate: string): Promise<TickOut
   const [{ data: orderRows }, { data: tickRows }, holdings, report] = await Promise.all([
     supabase
       .from("orders")
-      .select("id, tick_id, ticker, side, quantity, status, filled_quantity, kis_order_no, stop_loss, take_profit")
+      .select("id, tick_id, ticker, side, quantity, status, filled_quantity, kis_order_no, stop_loss, take_profit, created_at")
       .eq("run_id", runId)
       .in("status", ["submitted", "filled"]),
     supabase.from("strategy_ticks").select("id, strategy").eq("run_id", runId),
@@ -473,7 +476,10 @@ export async function runTick(runId: string, tradeDate: string): Promise<TickOut
   await markPositions(runId, positions);
 
   // --- Exits: account-level, generated rather than proposed. ---
-  const exits = mandatoryExits(positions);
+  // A name the watcher has just sold is left alone: the fill takes a moment to
+  // leave the balance, and without this the tick would sell it a second time.
+  const cooling = recentlyExited(orders);
+  const exits = mandatoryExits(positions).filter((order) => !cooling.has(order.ticker));
   await cancelWorkingBuys(exits, orders);
 
   let submitted = 0;
@@ -628,6 +634,21 @@ export async function runTick(runId: string, tradeDate: string): Promise<TickOut
         rejected: result.rejected,
         reasoning: proposal.reasoning,
       });
+    }
+  }
+
+  // Anything held needs watching at a finer grain than this tick provides, and
+  // the watcher is started here rather than by the strategies because it is the
+  // desk's promise, not theirs. A watcher that has gone quiet is replaced.
+  if (positions.length && state !== "closed") {
+    const { data: run } = await supabase
+      .from("runs")
+      .select("metadata")
+      .eq("id", runId)
+      .maybeSingle();
+
+    if (!watcherIsAlive((run?.metadata ?? null) as Record<string, unknown> | null)) {
+      await enqueue("/api/workers/position-watch", { runId, tradeDate, generation: 0 });
     }
   }
 

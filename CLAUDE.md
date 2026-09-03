@@ -53,6 +53,8 @@ Work is split into teams under `lib/teams/`, all sharing the same infrastructure
 
 **Jobs and workers.** Per the queueing rule in `AGENTS.md`, `app/api/jobs/*` is the scheduled entry point: it enqueues to QStash and returns. `app/api/workers/*` does the work. A job that would exceed the function ceiling is split across several workers chained through the queue — the market report does generation and translation as two workers, and the strategy team has four. `app/api/jobs/failure` is QStash's failure callback, so a run killed mid-flight still reports itself.
 
+Not everything is a schedule. `workers/position-watch` is a **chain**: while the desk holds anything it polls the balance every 15s and acts on the exits, then queues its own successor. QStash crons are minute-grained at best, and a stop checked every five minutes is not a stop — a position read −1.55% at 09:16 and −5.21% at 09:20 on 2026-09-03. The chain ends when the desk is flat, when the session closes, or at a generation cap, so a bug cannot leave a function re-queueing itself forever.
+
 **Schedules live in QStash, not in this repo.** Nothing here creates or verifies them, so this table is a transcription — if it disagrees with the Upstash console, the console wins. Crons are UTC.
 
 | Job | Cron | KST |
