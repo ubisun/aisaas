@@ -199,11 +199,19 @@ export const TRADING_CONFIG = {
     /**
      * A ticker sold within this window is left alone.
      *
-     * The tick and the watcher both generate exits, and a fill takes a moment
-     * to reach the balance -- without this, whichever ran second would see the
-     * position still held and sell it again.
+     * Deliberately short -- about one poll. It exists for one narrow thing: the
+     * seconds between submitting a sale and Korea Investment reducing the
+     * orderable quantity it reports back. Outside that window `sellableQuantity`
+     * is authoritative and a duplicate cannot oversell anyway.
+     *
+     * It was 60s and that was worse than having none. Suppression leaves no
+     * record and blocks the ticker for the whole window, so a profit ladder
+     * that cleared its second rung inside a minute would silently miss it. A
+     * duplicate that gets through, by contrast, is refused by the broker, is
+     * recorded with a reason, and is retried by the next poll fifteen seconds
+     * later. Visible and self-correcting beats invisible and blocked.
      */
-    exitCooldownSeconds: 60,
+    exitCooldownSeconds: 20,
   },
 
   /**

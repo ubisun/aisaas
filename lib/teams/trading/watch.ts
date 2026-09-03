@@ -6,7 +6,7 @@ import { fetchHoldings } from "./kis";
 import { markPositions } from "./performance";
 import { mandatoryExits, screenExits, seoulClock, windowState } from "./risk";
 import { buildPositions, submitVerdicts, type OrderRow } from "./session";
-import type { ProposedOrder } from "./types";
+import type { Position, ProposedOrder } from "./types";
 
 /**
  * Watching a position between ticks.
@@ -33,11 +33,18 @@ const { watch } = TRADING_CONFIG;
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
- * Tickers sold recently enough that selling again would be a mistake.
+ * Tickers sold so recently that the balance has probably not caught up.
  *
- * The tick and the watcher both generate exits from the same positions, and a
- * fill takes a moment to leave the balance. Without this, whichever ran second
- * would see the position still held and sell it a second time.
+ * Narrow on purpose. `sellableQuantity` is what actually stops an oversell --
+ * Korea Investment excludes shares already working in an order -- and this only
+ * covers the seconds before that figure updates.
+ *
+ * Suppression is the expensive kind of safety: it leaves no record and it
+ * blocks the whole ticker, so a profit ladder clearing its second rung inside
+ * the window would miss it silently. A duplicate that gets through is refused
+ * by the broker, recorded with a reason, and retried on the next poll. The
+ * window is therefore kept to about one poll rather than to a comfortable
+ * margin.
  */
 export function recentlyExited(
   orders: { ticker: string; side: string; status: string; created_at?: string }[],
@@ -54,6 +61,76 @@ export function recentlyExited(
       )
       .map((o) => o.ticker),
   );
+}
+
+export type ExitDecision = {
+  /** Exits to place now. */
+  due: ProposedOrder[];
+  /**
+   * Exits the cooldown held back, and why. Returned rather than discarded: a
+   * suppression nobody can see is how the profit ladder lost its second rung
+   * without anyone noticing.
+   */
+  heldBack: { order: ProposedOrder; soldSecondsAgo: number }[];
+};
+
+/**
+ * What the desk owes on its positions right now.
+ *
+ * Pure, and separated from the loop that calls it, because this is the part
+ * that decides whether a stop is honoured. `mandatoryExits` says what the rules
+ * demand; this subtracts only what is already in flight.
+ */
+export function exitsDueNow(
+  positions: Position[],
+  orders: { ticker: string; side: string; status: string; created_at?: string }[],
+  at: Date = new Date(),
+): ExitDecision {
+  const cooling = recentlyExited(orders, at.getTime());
+  const due: ProposedOrder[] = [];
+  const heldBack: ExitDecision["heldBack"] = [];
+
+  for (const order of mandatoryExits(positions, at)) {
+    if (!cooling.has(order.ticker)) {
+      due.push(order);
+      continue;
+    }
+
+    const last = orders
+      .filter((o) => o.ticker === order.ticker && o.side === "sell" && o.created_at)
+      .map((o) => Date.parse(o.created_at as string))
+      .sort((a, b) => b - a)[0];
+
+    heldBack.push({
+      order,
+      soldSecondsAgo: last ? Math.round((at.getTime() - last) / 1000) : 0,
+    });
+  }
+
+  return { due, heldBack };
+}
+
+export type WatchStep = "poll" | "flat" | "closed" | "generations" | "handed-on";
+
+/**
+ * What the loop should do next.
+ *
+ * Every way the chain can end, in one place that can be read and tested. The
+ * order matters: the generation cap is checked before anything else so a
+ * runaway chain stops even if the rest of the state looks normal.
+ */
+export function nextStep(state: {
+  generation: number;
+  now: number;
+  deadline: number;
+  holdings: number;
+  closed: boolean;
+}): WatchStep {
+  if (state.generation >= watch.maxGenerations) return "generations";
+  if (state.closed) return "closed";
+  if (state.now >= state.deadline) return "handed-on";
+  if (state.holdings === 0) return "flat";
+  return "poll";
 }
 
 async function loadOrders(runId: string): Promise<OrderRow[]> {
@@ -115,16 +192,17 @@ export async function watchPositions(
   let polls = 0;
   let exits = 0;
 
-  if (generation >= watch.maxGenerations) {
-    return { polls, exits, stopped: "generations" };
-  }
-
   await heartbeat(runId, generation);
 
-  while (Date.now() < deadline) {
-    // The close job flattens what is left; a watcher still running past it
-    // would be a second thing selling the same position.
-    if (windowState() === "closed") return { polls, exits, stopped: "closed" };
+  while (true) {
+    const step = nextStep({
+      generation,
+      now: Date.now(),
+      deadline,
+      holdings: 1, // unknown until the balance is read; the read follows
+      closed: windowState() === "closed",
+    });
+    if (step !== "poll") return { polls, exits, stopped: step as WatchOutcome["stopped"] };
 
     polls += 1;
     const holdings = await fetchHoldings();
@@ -138,10 +216,15 @@ export async function watchPositions(
     // profit is estimated from.
     await markPositions(runId, positions);
 
-    const cooling = recentlyExited(orders);
-    const due: ProposedOrder[] = mandatoryExits(positions).filter(
-      (order) => !cooling.has(order.ticker),
-    );
+    const { due, heldBack } = exitsDueNow(positions, orders);
+
+    for (const held of heldBack) {
+      // Logged rather than dropped in silence: a suppression that keeps
+      // happening is the signal that the window is too wide.
+      console.warn(
+        `watcher: holding back ${held.order.side} ${held.order.ticker} — sold ${held.soldSecondsAgo}s ago (${held.order.reason})`,
+      );
+    }
 
     if (due.length) {
       const { data: tick, error } = await supabase

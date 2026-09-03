@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { render, type AppEvent } from "@/lib/notify/events";
-import { costOf, type UsageRow } from "@/lib/telegram/commands";
+import { costOf, REGISTRY, runCommand, type UsageRow } from "@/lib/telegram/commands";
 
 /**
  * What reaches the CEO, and what it says it cost.
@@ -159,5 +159,41 @@ describe("model cost", () => {
 
   it("costs nothing for a call that used nothing", () => {
     expect(costOf(usage())).toBe(0);
+  });
+});
+
+describe("the command registry", () => {
+  it("documents every command through /help", async () => {
+    const help = await REGISTRY.find((c) => c.name === "help")!.handle({ args: "" });
+    for (const command of REGISTRY) {
+      expect(help).toContain(`/${command.name}`);
+    }
+  });
+
+  it("offers a way to read performance without waiting for the close", () => {
+    // The closing briefing carries a link, but it arrives once a day. Asking
+    // should not require having kept that message.
+    expect(REGISTRY.map((c) => c.name)).toContain("performance");
+  });
+
+  it("names every command uniquely", () => {
+    const names = REGISTRY.map((c) => c.name);
+    expect(new Set(names).size).toBe(names.length);
+  });
+
+  it("says so plainly when a command does not exist", async () => {
+    const reply = await runCommand("/nonsense");
+    expect(reply).toContain("Unknown command");
+    expect(reply).toContain("/help");
+  });
+
+  it("ignores ordinary chatter so it can be treated as feedback", async () => {
+    expect(await runCommand("오늘 어땠어?")).toBeNull();
+  });
+
+  it("tolerates the @botname Telegram appends in a group", async () => {
+    const reply = await runCommand("/nonsense@docai_bot");
+    expect(reply).toContain("nonsense");
+    expect(reply).not.toContain("@docai_bot");
   });
 });

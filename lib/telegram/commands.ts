@@ -223,6 +223,82 @@ const cost: Command = {
   },
 };
 
+type SnapshotRow = {
+  trade_date: string;
+  account_realised_krw: number | null;
+  realised_pnl_krw: number | null;
+  by_strategy: Record<string, number>;
+  capital_krw: number | null;
+  total_equity_krw: number | null;
+  attribution_source: string | null;
+};
+
+const money = (value: number) =>
+  `${value >= 0 ? "+" : "−"}${Math.abs(Math.round(value)).toLocaleString("ko-KR")}원`;
+
+/** The account's own figure, falling back to the per-strategy sum. */
+const dayResult = (row: SnapshotRow) =>
+  row.account_realised_krw ?? row.realised_pnl_krw ?? 0;
+
+const performance: Command = {
+  name: "performance",
+  description: "수익률 — 기간별과 전략별",
+  async handle() {
+    const supabase = createAdminClient();
+    const { data, error } = await supabase
+      .from("equity_snapshots")
+      .select(
+        "trade_date, account_realised_krw, realised_pnl_krw, by_strategy, capital_krw, total_equity_krw, attribution_source",
+      )
+      .order("trade_date", { ascending: false })
+      .limit(60);
+
+    if (error) return `Could not read performance: ${escapeHtml(error.message)}`;
+
+    const rows = (data ?? []) as SnapshotRow[];
+    if (!rows.length) return "아직 기록된 세션이 없습니다. 첫 마감 이후에 나타납니다.";
+
+    const capital = rows[0].capital_krw ?? 0;
+    const cumulative = rows.reduce((sum, r) => sum + dayResult(r), 0);
+    const wins = rows.filter((r) => dayResult(r) > 0).length;
+    const rate = capital > 0 ? (cumulative / capital) * 100 : 0;
+
+    // Per strategy across everything shown. Estimated on the paper account,
+    // where the broker reports no fills -- said plainly rather than implied.
+    const byStrategy = new Map<string, number>();
+    for (const row of rows) {
+      for (const [name, amount] of Object.entries(row.by_strategy ?? {})) {
+        byStrategy.set(name, (byStrategy.get(name) ?? 0) + amount);
+      }
+    }
+
+    const estimated = rows.every((r) => r.attribution_source === "marks");
+    const latest = rows[0];
+
+    const recent = rows
+      .slice(0, 5)
+      .map((r) => `${escapeHtml(r.trade_date)}  ${money(dayResult(r))}`)
+      .join("\n");
+
+    const strategies = [...byStrategy.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .map(([name, amount]) => `• <b>${escapeHtml(name)}</b> ${money(amount)}`)
+      .join("\n");
+
+    return (
+      `<b>📈 수익률</b>\n` +
+      `누적 <b>${money(cumulative)}</b> · ${rate >= 0 ? "+" : "−"}${Math.abs(rate).toFixed(2)}%\n` +
+      `${rows.length}거래일 중 ${wins}일 수익 · 자본 ${Math.round(capital).toLocaleString("ko-KR")}원\n` +
+      (latest.total_equity_krw === null
+        ? ""
+        : `계좌 잔고 ${Math.round(latest.total_equity_krw).toLocaleString("ko-KR")}원 (${escapeHtml(latest.trade_date)} 마감)\n`) +
+      `\n<b>전략별${estimated ? " (추정)" : ""}</b>\n${strategies || "기록 없음"}\n` +
+      `\n<b>최근</b>\n${recent}\n\n` +
+      `<a href="${escapeHtml(appUrl("/performance"))}">종목별 상세 보기</a>`
+    );
+  },
+};
+
 const help: Command = {
   name: "help",
   description: "This list",
@@ -232,7 +308,7 @@ const help: Command = {
   },
 };
 
-export const REGISTRY: Command[] = [status, report, approvals, cost, help];
+export const REGISTRY: Command[] = [status, report, performance, approvals, cost, help];
 
 /**
  * Parse and run a message. Returns null when the text is not a command, so
