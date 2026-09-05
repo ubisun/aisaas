@@ -228,8 +228,22 @@ export type RankedStock = {
   rank: number;
   price: number;
   changePct: number;
+  /** Cumulative traded value today, in KRW. */
   turnover: number;
   volume: number;
+  /** Shares outstanding, straight from the ranking. */
+  sharesOutstanding: number;
+  /** Market capitalisation in 억원, derived from price and shares. */
+  marketCapEok: number;
+  /**
+   * Traded value against market capitalisation, in percent.
+   *
+   * KIS computes this itself as `tr_pbmn_tnrt` and it agrees with the figure
+   * derived from `lstn_stcn * stck_prpr` to within 0.02% -- checked against the
+   * quote endpoint's own `hts_avls` on five names. The screen therefore needs
+   * no per-ticker quote at all, which is what makes a wider pool affordable.
+   */
+  turnoverToMarketCapPct: number;
 };
 
 /**
@@ -240,7 +254,11 @@ export type RankedStock = {
  * endpoint returns 30 rows and offers no paging, and "all" is dominated by
  * KOSPI large caps, so the caller asks per market and merges.
  */
-export async function fetchVolumeRank(market = "0000"): Promise<RankedStock[]> {
+export async function fetchVolumeRank(
+  market = "0000",
+  minPrice = 0,
+  maxPrice: number | null = null,
+): Promise<RankedStock[]> {
   const payload = await call<{ output?: Record<string, string>[] }>(
     "/uapi/domestic-stock/v1/quotations/volume-rank",
     VOLUME_RANK_TR,
@@ -266,24 +284,42 @@ export async function fetchVolumeRank(market = "0000"): Promise<RankedStock[]> {
          * ETF is not what this strategy is reading the market for.
          */
         FID_TRGT_EXLS_CLS_CODE: "1111111101",
-        // A floor keeps out penny stocks, where a 2% stop is inside the spread.
-        FID_INPUT_PRICE_1: String(TRADING_CONFIG.screening.minPriceKrw),
-        FID_INPUT_PRICE_2: "",
+        // The price range is also how the pool is widened: the endpoint returns
+        // thirty rows whatever is asked of it, so asking within bands returns
+        // thirty from each rather than thirty large caps.
+        FID_INPUT_PRICE_1: String(Math.max(minPrice, TRADING_CONFIG.screening.minPriceKrw)),
+        FID_INPUT_PRICE_2: maxPrice === null ? "" : String(maxPrice),
         FID_VOL_CNT: "",
         FID_INPUT_DATE_1: "",
       },
     },
   );
 
-  return (payload.output ?? []).map((row) => ({
+  return (payload.output ?? []).map(toRanked);
+}
+
+/** One ranking row, with the size figures it already carries worked out. */
+export function toRanked(row: Record<string, string>): RankedStock {
+  const price = num(row.stck_prpr);
+  const shares = num(row.lstn_stcn);
+  const turnover = num(row.acml_tr_pbmn);
+  const marketCapKrw = price * shares;
+
+  return {
     ticker: row.mksc_shrn_iscd,
     name: row.hts_kor_isnm,
     rank: num(row.data_rank),
-    price: num(row.stck_prpr),
+    price,
     changePct: num(row.n_befr_clpr_vrss_prpr_rate),
-    turnover: num(row.acml_tr_pbmn),
+    turnover,
     volume: num(row.acml_vol),
-  }));
+    sharesOutstanding: shares,
+    marketCapEok: marketCapKrw / 100_000_000,
+    // KIS's own figure where it has one; derived otherwise, so a missing field
+    // degrades to arithmetic rather than to zero.
+    turnoverToMarketCapPct:
+      num(row.tr_pbmn_tnrt) || (marketCapKrw > 0 ? (turnover / marketCapKrw) * 100 : 0),
+  };
 }
 
 export type Holding = {

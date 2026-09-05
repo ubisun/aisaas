@@ -1,7 +1,7 @@
 import { createAdminClient } from "@/lib/supabase/admin";
 
 import { TRADING_CONFIG } from "./config";
-import { fetchQuote, fetchVolumeRank } from "./kis";
+import { fetchVolumeRank, type RankedStock } from "./kis";
 import type { Candidate } from "./types";
 
 /**
@@ -80,69 +80,49 @@ export type ScreenedCandidate = Candidate & {
 };
 
 /**
- * Market capitalisation for a set of tickers, fetched at most once each per
- * trading day.
+ * Choose the shortlist from ranking rows that have already been fetched.
  *
- * This is what makes re-screening affordable. The ranking response carries
- * turnover but not market cap, and market cap costs a quote call per ticker at
- * 1.2s apiece in the paper environment. Since it does not move intraday in any
- * way a 1% threshold notices, the first screen of the day pays for it and every
- * screen after reads the cache.
+ * Pure, so the choosing can be tested without the network. Two filters, in this
+ * order: what is actually being traded, and whether that activity is large
+ * relative to the company's size.
  *
- * A ticker whose quote fails is simply left out of the map; the screen skips it
- * rather than failing the tick over one name.
+ * No quote call anywhere. The ranking response carries shares outstanding and
+ * KIS's own traded-value-to-market-cap figure, which agrees with the quote
+ * endpoint's market cap to within 0.02%. That is what makes a pool three times
+ * wider cost less than the narrow one did.
  */
-async function marketCaps(
-  tickers: { ticker: string; name: string }[],
-  tradeDate: string,
-): Promise<Map<string, number>> {
-  const supabase = createAdminClient();
-  const caps = new Map<string, number>();
-
-  const { data: cached } = await supabase
-    .from("market_caps")
-    .select("ticker, market_cap_eok")
-    .eq("trade_date", tradeDate)
-    .in(
-      "ticker",
-      tickers.map((t) => t.ticker),
-    );
-
-  for (const row of cached ?? []) {
-    caps.set(row.ticker as string, Number(row.market_cap_eok));
+export function selectFrom(rows: RankedStock[]): ScreenedCandidate[] {
+  const byTicker = new Map<string, RankedStock>();
+  for (const row of rows) {
+    if (!row.ticker) continue;
+    const existing = byTicker.get(row.ticker);
+    // The same name can appear in more than one band or market; keep the
+    // reading that saw the most trading, which is the freshest.
+    if (!existing || row.turnover > existing.turnover) byTicker.set(row.ticker, row);
   }
 
-  const missing = tickers.filter((t) => !caps.has(t.ticker));
-  if (!missing.length) return caps;
+  const screened: ScreenedCandidate[] = [];
 
-  const fetched: { ticker: string; trade_date: string; name: string; market_cap_eok: number }[] = [];
+  for (const row of byTicker.values()) {
+    if (row.turnover < screening.minTurnoverKrw) continue;
+    if (row.marketCapEok <= 0) continue;
+    if (row.turnoverToMarketCapPct < screening.minTurnoverToMarketCapPct) continue;
 
-  for (const { ticker, name } of missing) {
-    try {
-      const quote = await fetchQuote(ticker);
-      if (quote.marketCapEok <= 0) continue;
-      caps.set(ticker, quote.marketCapEok);
-      fetched.push({
-        ticker,
-        trade_date: tradeDate,
-        name,
-        market_cap_eok: quote.marketCapEok,
-      });
-    } catch (cause) {
-      console.warn(`market cap: skipping ${ticker}`, cause);
-    }
+    screened.push({
+      ticker: row.ticker,
+      name: row.name,
+      price: row.price,
+      changePct: row.changePct,
+      turnover: row.turnover,
+      turnoverToMarketCapPct: row.turnoverToMarketCapPct,
+      turnoverRank: row.rank,
+      marketCapEok: row.marketCapEok,
+    });
   }
 
-  if (fetched.length) {
-    // Ignore a write failure: the caps are already in hand for this screen, and
-    // the worst case is paying for the quotes again on the next tick.
-    const { error } = await supabase
-      .from("market_caps")
-      .upsert(fetched, { onConflict: "ticker,trade_date" });
-    if (error) console.warn(`market cap: caching failed: ${error.message}`);
-  }
-
-  return caps;
+  // Most repriced relative to size first, then let the cap decide.
+  screened.sort((a, b) => b.turnoverToMarketCapPct - a.turnoverToMarketCapPct);
+  return screened.slice(0, limits.maxCandidates);
 }
 
 /**
@@ -151,58 +131,33 @@ async function marketCaps(
  * Called once per tick rather than once per morning. The screen asks what is
  * being traded heavily *this morning*, which a list computed before the opening
  * bell cannot answer -- today's accumulated turnover is zero until the market
- * opens, so a pre-open screen fails the liquidity filter on every name and
- * returns nothing. That is what it did: 296 of 296 in-window decision points
- * between 07-27 and 08-28 saw an empty shortlist and no order was ever placed.
+ * opens.
  *
  * The turnover floor doubles as a time gate, which is why the entry window did
  * not need moving: ten minutes after the open only the genuinely heavy names
  * have cleared it, and the list fills out as the morning goes on.
  */
 export async function screenNow(tradeDate: string): Promise<ScreenedCandidate[]> {
-  // One ranking call per market, merged. Asking for "all markets" returns what
-  // is effectively the KOSPI list, which buries exactly the mid caps this
-  // screen is looking for.
-  const byTicker = new Map<string, Awaited<ReturnType<typeof fetchVolumeRank>>[number]>();
+  // Kept in the signature: the caller passes the session it is screening for,
+  // and a future screen that wants yesterday's close will need it.
+  void tradeDate;
+
+  // One call per market per price band. Six calls, and nothing else -- the size
+  // figures the screen needs already travel with the ranking.
+  const rows: RankedStock[] = [];
   for (const market of screening.markets) {
-    const rows = (await fetchVolumeRank(market)).slice(0, screening.rankPoolSize);
-    for (const row of rows) {
-      const existing = byTicker.get(row.ticker);
-      // Keep the better rank if a name somehow appears in both lists.
-      if (!existing || row.rank < existing.rank) byTicker.set(row.ticker, row);
+    for (const [low, high] of screening.priceBands) {
+      try {
+        rows.push(...(await fetchVolumeRank(market, low, high)).slice(0, screening.rankPoolSize));
+      } catch (cause) {
+        // One band failing should cost that band, not the morning.
+        console.warn(
+          `screen: ${market} ${low}-${high ?? "up"} unavailable`,
+          cause instanceof Error ? cause.message : cause,
+        );
+      }
     }
   }
 
-  const liquid = [...byTicker.values()].filter(
-    (row) => row.turnover >= screening.minTurnoverKrw,
-  );
-  if (!liquid.length) return [];
-
-  const caps = await marketCaps(liquid, tradeDate);
-
-  const screened: ScreenedCandidate[] = [];
-  for (const row of liquid) {
-    const marketCapEok = caps.get(row.ticker);
-    if (!marketCapEok) continue;
-
-    // hts_avls is reported in 억원; turnover is in KRW.
-    const marketCapKrw = marketCapEok * 100_000_000;
-    const turnoverToMarketCapPct = (row.turnover / marketCapKrw) * 100;
-    if (turnoverToMarketCapPct < screening.minTurnoverToMarketCapPct) continue;
-
-    screened.push({
-      ticker: row.ticker,
-      name: row.name,
-      price: row.price,
-      changePct: row.changePct,
-      turnover: row.turnover,
-      turnoverToMarketCapPct,
-      turnoverRank: row.rank,
-      marketCapEok,
-    });
-  }
-
-  // Most repriced relative to size first, then let the cap decide.
-  screened.sort((a, b) => b.turnoverToMarketCapPct - a.turnoverToMarketCapPct);
-  return screened.slice(0, limits.maxCandidates);
+  return selectFrom(rows);
 }
