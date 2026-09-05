@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { TRADING_CONFIG } from "@/lib/teams/trading/config";
-import { exitsDueNow, nextStep } from "@/lib/teams/trading/watch";
+import { exitsDueNow, nextStep, shouldHandOn } from "@/lib/teams/trading/watch";
 
 import { kst, position } from "../helpers/builders";
 
@@ -241,5 +241,86 @@ describe("timings taken from what actually happened", () => {
     // And crossing is all it takes -- there is no confirmation, no second look.
     const { due } = exitsDueNow([position({ pnlPct: -2.01 })], [], AT);
     expect(due).toHaveLength(1);
+  });
+});
+
+describe("the generation cap has margin over a whole session", () => {
+  const sessionSeconds =
+    (TRADING_CONFIG.window.closeHour * 60 + TRADING_CONFIG.window.closeMinute) * 60 -
+    (TRADING_CONFIG.window.openHour * 60 + TRADING_CONFIG.window.openMinute) * 60;
+
+  const needed = Math.ceil(sessionSeconds / watch.invocationSeconds);
+
+  it("covers a position held from the open to the flatten", () => {
+    expect(watch.maxGenerations).toBeGreaterThan(needed);
+  });
+
+  it("leaves room for generations that end early", () => {
+    // 2026-09-04 held a position for six hours and used 99 where 92 were
+    // enough: a failure hands on at once rather than after four minutes, so a
+    // few of those burn the budget faster than the clock does. The margin has
+    // to be a multiple, not a handful.
+    expect(watch.maxGenerations).toBeGreaterThanOrEqual(needed * 2);
+  });
+
+  it("still stops -- the cap is a cap, not a suggestion", () => {
+    expect(
+      nextStep({
+        generation: watch.maxGenerations,
+        now: 0,
+        deadline: Number.MAX_SAFE_INTEGER,
+        holdings: 3,
+        closed: false,
+      }),
+    ).toBe("generations");
+  });
+});
+
+describe("whether the chain continues", () => {
+  /**
+   * Asked by both callers -- the invocation that finished and the one that
+   * threw. Written out twice with different rules before, which is how the
+   * error path came to hand on past the closing bell.
+   */
+  const carryOn = (over: Partial<Parameters<typeof shouldHandOn>[0]> = {}) =>
+    shouldHandOn({ stopped: "handed-on", nextGeneration: 5, closed: false, ...over });
+
+  it("continues when an invocation simply ran out of time", () => {
+    expect(carryOn()).toBe(true);
+  });
+
+  it("continues after a failure, rather than leaving the desk unwatched", () => {
+    expect(carryOn({ stopped: "failed" })).toBe(true);
+  });
+
+  it("stops after a failure once the session has closed", () => {
+    // The bug: a failure hands on immediately rather than after four minutes,
+    // so an endpoint failing in a loop burned generations at the speed of the
+    // queue -- and without this would have kept doing so all evening.
+    expect(carryOn({ stopped: "failed", closed: true })).toBe(false);
+  });
+
+  it("stops at the cap, whichever way the invocation ended", () => {
+    for (const stopped of ["handed-on", "failed"] as const) {
+      expect(carryOn({ stopped, nextGeneration: watch.maxGenerations })).toBe(false);
+    }
+  });
+
+  it("does not queue a generation whose only act would be to notice the cap", () => {
+    // The success path used to check neither the cap nor the window, so the
+    // last generation queued one more that stopped immediately.
+    expect(carryOn({ nextGeneration: watch.maxGenerations - 1 })).toBe(true);
+    expect(carryOn({ nextGeneration: watch.maxGenerations })).toBe(false);
+  });
+
+  it.each(["flat", "closed", "generations"] as const)(
+    "does not continue after stopping for %s",
+    (stopped) => {
+      expect(carryOn({ stopped })).toBe(false);
+    },
+  );
+
+  it("stops on a closed session even when the invocation ended cleanly", () => {
+    expect(carryOn({ closed: true })).toBe(false);
   });
 });

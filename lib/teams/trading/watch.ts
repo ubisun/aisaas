@@ -146,6 +146,43 @@ async function loadOrders(runId: string): Promise<OrderRow[]> {
   return (data ?? []) as OrderRow[];
 }
 
+/**
+ * Open the record for this generation.
+ *
+ * Written before any work, so a generation that dies immediately still leaves a
+ * row saying it existed. The count of those is what tells a fast-failure loop
+ * apart from a long, healthy session.
+ */
+async function openGeneration(runId: string, generation: number): Promise<void> {
+  const supabase = createAdminClient();
+  const { error } = await supabase.from("watch_generations").upsert(
+    { run_id: runId, generation, started_at: new Date().toISOString(), polls: 0, exits: 0 },
+    { onConflict: "run_id,generation" },
+  );
+  if (error) console.warn(`watcher could not open generation ${generation}: ${error.message}`);
+}
+
+/** Close it, with what it managed to do and what ended it. */
+export async function closeGeneration(
+  runId: string,
+  generation: number,
+  outcome: { polls: number; exits: number; stopped: string; detail?: string },
+): Promise<void> {
+  const supabase = createAdminClient();
+  const { error } = await supabase
+    .from("watch_generations")
+    .update({
+      ended_at: new Date().toISOString(),
+      polls: outcome.polls,
+      exits: outcome.exits,
+      stopped: outcome.stopped,
+      detail: outcome.detail ?? null,
+    })
+    .match({ run_id: runId, generation });
+
+  if (error) console.warn(`watcher could not close generation ${generation}: ${error.message}`);
+}
+
 /** Record that a watcher is alive, so a tick can tell whether to start one. */
 async function heartbeat(runId: string, generation: number): Promise<void> {
   const supabase = createAdminClient();
@@ -171,6 +208,33 @@ export function watcherIsAlive(metadata: Record<string, unknown> | null): boolea
   return Date.now() - Date.parse(beat) < watch.staleHeartbeatSeconds * 1000;
 }
 
+/**
+ * Whether the chain continues after this invocation.
+ *
+ * Both callers -- the one that finished cleanly and the one that threw -- ask
+ * here, because the reasons to stop are the same for each and were previously
+ * written out twice with different rules. The error path checked the window and
+ * the cap; the success path checked neither, and would queue a generation whose
+ * only act was to notice it was over the cap.
+ *
+ * A failure hands on: giving up on one bad response would leave the desk
+ * unwatched for the rest of the session, which is what this worker exists to
+ * prevent. But a failure hands on *immediately* rather than after four minutes,
+ * so an endpoint failing in a loop burns generations at the speed of the queue.
+ * That is why the window is checked here and not only inside the loop -- on
+ * 2026-09-04 a session needing 92 generations used 99.
+ */
+export function shouldHandOn(state: {
+  stopped: WatchOutcome["stopped"] | "failed";
+  /** The generation that would run next. */
+  nextGeneration: number;
+  closed: boolean;
+}): boolean {
+  if (state.nextGeneration >= watch.maxGenerations) return false;
+  if (state.closed) return false;
+  return state.stopped === "handed-on" || state.stopped === "failed";
+}
+
 export type WatchOutcome = {
   polls: number;
   exits: number;
@@ -192,7 +256,12 @@ export async function watchPositions(
   let polls = 0;
   let exits = 0;
 
-  await heartbeat(runId, generation);
+  await Promise.all([heartbeat(runId, generation), openGeneration(runId, generation)]);
+
+  const finish = async (stopped: WatchOutcome["stopped"]): Promise<WatchOutcome> => {
+    await closeGeneration(runId, generation, { polls, exits, stopped });
+    return { polls, exits, stopped };
+  };
 
   while (true) {
     const step = nextStep({
@@ -202,11 +271,11 @@ export async function watchPositions(
       holdings: 1, // unknown until the balance is read; the read follows
       closed: windowState() === "closed",
     });
-    if (step !== "poll") return { polls, exits, stopped: step as WatchOutcome["stopped"] };
+    if (step !== "poll") return finish(step as WatchOutcome["stopped"]);
 
     polls += 1;
     const holdings = await fetchHoldings();
-    if (!holdings.length) return { polls, exits, stopped: "flat" };
+    if (!holdings.length) return finish("flat");
 
     const orders = await loadOrders(runId);
     const positions = buildPositions(holdings, orders);
@@ -254,5 +323,5 @@ export async function watchPositions(
 
   await setPhase(runId, "watching");
   void tradeDate;
-  return { polls, exits, stopped: "handed-on" };
+  return finish("handed-on");
 }

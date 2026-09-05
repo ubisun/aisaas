@@ -189,11 +189,21 @@ export const TRADING_CONFIG = {
      */
     invocationSeconds: 240,
     /**
-     * Hard ceiling on the chain. At four minutes each this covers a full
-     * session several times over, and it means a bug cannot leave a function
-     * re-queueing itself forever.
+     * Hard ceiling on the chain, and the last thing standing between a bug and
+     * a function that re-queues itself forever. Checked before anything else.
+     *
+     * A full session is 09:10 to 15:15, which is 21,900 seconds, or about 92
+     * generations at four minutes each. It was 100 -- and on 2026-09-04 a
+     * session held a position for six hours and reached generation 99. The
+     * margin was one.
+     *
+     * 200 is roughly twice a session, which is margin for generations that end
+     * early rather than a licence to run longer: the chain is stopped by the
+     * closing bell and by the desk going flat long before this matters. Why
+     * that session needed 99 instead of 92 is answered by `watch_generations`,
+     * which now records what each one did.
      */
-    maxGenerations: 100,
+    maxGenerations: 200,
     /** A watcher quieter than this is presumed dead and may be replaced. */
     staleHeartbeatSeconds: 90,
     /**
