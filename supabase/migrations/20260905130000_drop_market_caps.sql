@@ -1,0 +1,16 @@
+-- The screen no longer needs a market-cap cache, because it no longer fetches
+-- market caps.
+--
+-- The ranking response was carrying `lstn_stcn` (shares outstanding) and
+-- `tr_pbmn_tnrt` (traded value against market capitalisation) all along. Checked
+-- against the quote endpoint's own `hts_avls` on five names: the derived figure
+-- agrees to within 0.02%, and KIS's ratio matches the one computed from it
+-- exactly.
+--
+-- So the per-ticker quote the cache existed to avoid is gone, and with it the
+-- reason to keep a day's worth of rows. This is what made a pool three times
+-- wider cost less than the narrow one did.
+--
+-- Dropped rather than left in place: a table nothing reads is one someone will
+-- later mistake for a source of truth.
+drop table if exists market_caps;

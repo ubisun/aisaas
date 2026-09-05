@@ -142,6 +142,27 @@ export const TRADING_CONFIG = {
      */
     markets: ["0001", "1001"] as const,
     /**
+     * Price ranges asked for separately, so the pool is not thirty large caps.
+     *
+     * The endpoint returns thirty rows whatever is asked of it, ranked by
+     * absolute traded value -- which contradicts the screen it feeds. This
+     * screen looks for turnover relative to size, and a ₩400억 company trading
+     * ₩80억 of itself is exactly what it wants; ₩80억 does not come close to
+     * the top thirty. Measured on 2026-09-05, the lowest name in the KOSPI list
+     * had traded ₩826억, sixteen times the liquidity floor below.
+     *
+     * Asking within price bands returns thirty from each, and the low band is
+     * where the small caps live. It took the pool from 60 names to 180.
+     *
+     * Price is a poor stand-in for size and this is not a fix, only a wider
+     * window. The endpoint offers no market-cap filter.
+     */
+    priceBands: [
+      [2_000, 10_000],
+      [10_000, 50_000],
+      [50_000, null],
+    ] as const,
+    /**
      * Traded value against market capitalisation, in percent -- the "is this
      * actually moving relative to its size" test. A large cap ticking over on
      * ordinary volume fails it; a mid cap being repriced passes.
