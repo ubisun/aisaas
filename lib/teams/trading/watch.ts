@@ -146,6 +146,43 @@ async function loadOrders(runId: string): Promise<OrderRow[]> {
   return (data ?? []) as OrderRow[];
 }
 
+/**
+ * Open the record for this generation.
+ *
+ * Written before any work, so a generation that dies immediately still leaves a
+ * row saying it existed. The count of those is what tells a fast-failure loop
+ * apart from a long, healthy session.
+ */
+async function openGeneration(runId: string, generation: number): Promise<void> {
+  const supabase = createAdminClient();
+  const { error } = await supabase.from("watch_generations").upsert(
+    { run_id: runId, generation, started_at: new Date().toISOString(), polls: 0, exits: 0 },
+    { onConflict: "run_id,generation" },
+  );
+  if (error) console.warn(`watcher could not open generation ${generation}: ${error.message}`);
+}
+
+/** Close it, with what it managed to do and what ended it. */
+export async function closeGeneration(
+  runId: string,
+  generation: number,
+  outcome: { polls: number; exits: number; stopped: string; detail?: string },
+): Promise<void> {
+  const supabase = createAdminClient();
+  const { error } = await supabase
+    .from("watch_generations")
+    .update({
+      ended_at: new Date().toISOString(),
+      polls: outcome.polls,
+      exits: outcome.exits,
+      stopped: outcome.stopped,
+      detail: outcome.detail ?? null,
+    })
+    .match({ run_id: runId, generation });
+
+  if (error) console.warn(`watcher could not close generation ${generation}: ${error.message}`);
+}
+
 /** Record that a watcher is alive, so a tick can tell whether to start one. */
 async function heartbeat(runId: string, generation: number): Promise<void> {
   const supabase = createAdminClient();
@@ -192,7 +229,12 @@ export async function watchPositions(
   let polls = 0;
   let exits = 0;
 
-  await heartbeat(runId, generation);
+  await Promise.all([heartbeat(runId, generation), openGeneration(runId, generation)]);
+
+  const finish = async (stopped: WatchOutcome["stopped"]): Promise<WatchOutcome> => {
+    await closeGeneration(runId, generation, { polls, exits, stopped });
+    return { polls, exits, stopped };
+  };
 
   while (true) {
     const step = nextStep({
@@ -202,11 +244,11 @@ export async function watchPositions(
       holdings: 1, // unknown until the balance is read; the read follows
       closed: windowState() === "closed",
     });
-    if (step !== "poll") return { polls, exits, stopped: step as WatchOutcome["stopped"] };
+    if (step !== "poll") return finish(step as WatchOutcome["stopped"]);
 
     polls += 1;
     const holdings = await fetchHoldings();
-    if (!holdings.length) return { polls, exits, stopped: "flat" };
+    if (!holdings.length) return finish("flat");
 
     const orders = await loadOrders(runId);
     const positions = buildPositions(holdings, orders);
@@ -254,5 +296,5 @@ export async function watchPositions(
 
   await setPhase(runId, "watching");
   void tradeDate;
-  return { polls, exits, stopped: "handed-on" };
+  return finish("handed-on");
 }

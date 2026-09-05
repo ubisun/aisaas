@@ -243,3 +243,35 @@ describe("timings taken from what actually happened", () => {
     expect(due).toHaveLength(1);
   });
 });
+
+describe("the generation cap has margin over a whole session", () => {
+  const sessionSeconds =
+    (TRADING_CONFIG.window.closeHour * 60 + TRADING_CONFIG.window.closeMinute) * 60 -
+    (TRADING_CONFIG.window.openHour * 60 + TRADING_CONFIG.window.openMinute) * 60;
+
+  const needed = Math.ceil(sessionSeconds / watch.invocationSeconds);
+
+  it("covers a position held from the open to the flatten", () => {
+    expect(watch.maxGenerations).toBeGreaterThan(needed);
+  });
+
+  it("leaves room for generations that end early", () => {
+    // 2026-09-04 held a position for six hours and used 99 where 92 were
+    // enough: a failure hands on at once rather than after four minutes, so a
+    // few of those burn the budget faster than the clock does. The margin has
+    // to be a multiple, not a handful.
+    expect(watch.maxGenerations).toBeGreaterThanOrEqual(needed * 2);
+  });
+
+  it("still stops -- the cap is a cap, not a suggestion", () => {
+    expect(
+      nextStep({
+        generation: watch.maxGenerations,
+        now: 0,
+        deadline: Number.MAX_SAFE_INTEGER,
+        holdings: 3,
+        closed: false,
+      }),
+    ).toBe("generations");
+  });
+});
