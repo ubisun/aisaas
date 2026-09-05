@@ -208,6 +208,33 @@ export function watcherIsAlive(metadata: Record<string, unknown> | null): boolea
   return Date.now() - Date.parse(beat) < watch.staleHeartbeatSeconds * 1000;
 }
 
+/**
+ * Whether the chain continues after this invocation.
+ *
+ * Both callers -- the one that finished cleanly and the one that threw -- ask
+ * here, because the reasons to stop are the same for each and were previously
+ * written out twice with different rules. The error path checked the window and
+ * the cap; the success path checked neither, and would queue a generation whose
+ * only act was to notice it was over the cap.
+ *
+ * A failure hands on: giving up on one bad response would leave the desk
+ * unwatched for the rest of the session, which is what this worker exists to
+ * prevent. But a failure hands on *immediately* rather than after four minutes,
+ * so an endpoint failing in a loop burns generations at the speed of the queue.
+ * That is why the window is checked here and not only inside the loop -- on
+ * 2026-09-04 a session needing 92 generations used 99.
+ */
+export function shouldHandOn(state: {
+  stopped: WatchOutcome["stopped"] | "failed";
+  /** The generation that would run next. */
+  nextGeneration: number;
+  closed: boolean;
+}): boolean {
+  if (state.nextGeneration >= watch.maxGenerations) return false;
+  if (state.closed) return false;
+  return state.stopped === "handed-on" || state.stopped === "failed";
+}
+
 export type WatchOutcome = {
   polls: number;
   exits: number;
